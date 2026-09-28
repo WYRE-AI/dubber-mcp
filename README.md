@@ -8,11 +8,11 @@ Built on the MCP **2026-07-28** spec via the split v2 SDK
 (`@modelcontextprotocol/server` / `/node` / `/client` `^2.0.0-beta.5`) with **dual-era
 serving**: one shared `McpServerFactory` behind `createMcpHandler({ legacy: 'stateless' })`
 answers both 2025-era `initialize`-handshake clients (the WYRE gateway today) and modern
-2026-07-28 envelope clients, with an identical, deterministic 30-tool surface for every
+2026-07-28 envelope clients, with an identical, deterministic 37-tool surface for every
 caller. Ships as a GHCR container only (no MCPB bundle). The Dubber client is
 [`@wyre-ai/node-dubber`](https://github.com/WYRE-AI/node-dubber).
 
-## Tools (30, flat)
+## Tools (37, flat)
 
 - **Core**: `dubber_test_connection`.
 - **Groups**: `dubber_groups_get`, `dubber_groups_create_child`,

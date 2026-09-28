@@ -4,7 +4,7 @@
 
 ### 1.1 What shipped in v1
 
-A flat, 30-tool MCP surface over the Dubber API Store's call-recording and
+A flat, 37-tool MCP surface over the Dubber API Store's call-recording and
 compliance platform, spanning every documented endpoint category:
 
 - **Groups** (4 tools): hierarchy navigation, child-group creation, and
@@ -22,10 +22,11 @@ compliance platform, spanning every documented endpoint category:
 - **OAuth** (1 tool): token revocation.
 - **Core** (1 tool): `dubber_test_connection`.
 
-30 tools is comfortably inside the "flat, no router" band the fleet's
-`mcp-vendor-scaffolding` skill recommends (≤~25 as a rule of thumb, not a
-hard cutoff) — kept flat for a simpler client experience rather than adding
-router indirection for a surface this size.
+37 tools is above the "flat, no router" rule-of-thumb (≤~25) the fleet's
+`mcp-vendor-scaffolding` skill suggests, but it's a suggestion, not a hard
+cutoff — kept flat anyway for a simpler client experience rather than adding
+router indirection, since the category boundaries above are already clean
+enough that a router wouldn't meaningfully reduce per-call cognitive load.
 
 ### 1.2 What did NOT ship, and why
 
