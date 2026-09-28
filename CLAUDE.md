@@ -32,8 +32,24 @@ decisions: `docs/DESIGN.md`.
 - **Fleet conventions**: `@wyre-ai` scope, `ghcr.io/wyre-ai`, WYRE-AI/reusable-workflows
   release caller, SDK v2 dual-era serving from day one (no v1 debt to migrate later), the
   standard s2s-verify (`X-Gateway-S2S`) wrapper, no `deploy:` job (conduit-only vendor).
+- **`server.json`'s `description` really is capped at 100 chars.** The first release
+  (v1.0.0) shipped a 107-char description and failed "Publish to MCP Registry" at the
+  Validate server.json step — Docker image and npm/semantic-release still succeeded (it's a
+  separately gated job), so the fix was a one-line `fix:` commit (v1.0.1) to re-trigger.
+  Matches the documented gotcha in `mcp-registry-publish-gating`; count the string before
+  writing it, don't eyeball it.
+- **The reusable workflow's "Verify registry listing" step visibly hangs after a
+  successful publish** — the job sat "in progress" for ~90s after `curl
+  https://registry.modelcontextprotocol.io/v0/servers?search=io.github.WYRE-AI/dubber-mcp`
+  already showed the listing live (`status: "active"`, correct version, correct OCI
+  digest). It did complete green on its own; this is a known gotcha (see the kpn-mcp
+  journal for the same note), not a real failure — check the registry directly rather than
+  assuming a stuck job means the publish failed.
+- **CI verified fully green end-to-end**, not just pushed-and-hoped: v1.0.1 — Build/Lint/Test,
+  Release (semantic-release), Docker build+push, MCPB pack step (no-op, this repo ships no
+  bundle), Security Scan, and Publish to MCP Registry all ✓. `gh run view <id> --repo
+  WYRE-AI/dubber-mcp` before assuming otherwise.
 - **Not yet done**: registering `dubber` in conduit's `vendor-config.ts` and
   `azure/vendor-fleet.conduit-prod.bicepparam` (mcp-vendor-scaffolding §3), a marketplace
-  plugin entry (§4), and confirming the actual Docker/CI release pipeline goes fully green
-  end-to-end (Release workflow was pushed but not watched to completion when this was
-  written — verify `gh run list --repo WYRE-AI/dubber-mcp` before assuming it shipped).
+  plugin entry (§4), and any live call against a real Dubber sandbox account (see above —
+  everything here is MSW-mock-verified, not live-verified).
