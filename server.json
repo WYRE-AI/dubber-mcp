@@ -1,0 +1,83 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.WYRE-AI/dubber-mcp",
+  "title": "Dubber",
+  "description": "MCP server for Dubber: call recordings, groups, accounts, users, notifications (REST hooks), and Dub.Point.",
+  "repository": {
+    "url": "https://github.com/WYRE-AI/dubber-mcp",
+    "source": "github"
+  },
+  "version": "0.0.0",
+  "websiteUrl": "https://github.com/WYRE-AI/dubber-mcp",
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/wyre-ai/dubber-mcp:0.0.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "DUBBER_CLIENT_ID",
+          "description": "Mashery application key (developer.dubber.net)",
+          "isRequired": true,
+          "format": "string"
+        },
+        {
+          "name": "DUBBER_CLIENT_SECRET",
+          "description": "Mashery application secret",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "DUBBER_AUTH_ID",
+          "description": "Dubber Auth ID (Dubber portal → API tab)",
+          "isRequired": true,
+          "format": "string"
+        },
+        {
+          "name": "DUBBER_AUTH_TOKEN",
+          "description": "Dubber Auth Token (Dubber portal → API tab)",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "DUBBER_REGION",
+          "description": "API region segment, e.g. 'sandbox' for testing.",
+          "isRequired": false,
+          "default": "sandbox",
+          "format": "string"
+        },
+        {
+          "name": "DUBBER_BASE_URL",
+          "description": "Full API base URL override (env mode only; overrides DUBBER_REGION)",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "MCP_TRANSPORT",
+          "description": "Transport mode. Set to 'stdio' for local CLI use; the image defaults to 'http' for gateway hosting.",
+          "isRequired": false,
+          "default": "stdio",
+          "format": "string"
+        },
+        {
+          "name": "AUTH_MODE",
+          "description": "Credential source: 'env' reads vars locally, 'gateway' expects header injection from the WYRE MCP Gateway.",
+          "isRequired": false,
+          "default": "env",
+          "format": "string"
+        },
+        {
+          "name": "LOG_LEVEL",
+          "description": "Log verbosity: debug, info, warn, error",
+          "isRequired": false,
+          "default": "info",
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}
