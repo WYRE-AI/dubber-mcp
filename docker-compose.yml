@@ -1,0 +1,27 @@
+services:
+  # Gateway mode. Dubber credentials arrive per request on X-Dubber-* headers.
+  # Do not set DUBBER_CLIENT_ID, DUBBER_CLIENT_SECRET, DUBBER_AUTH_ID,
+  # DUBBER_AUTH_TOKEN, or env_file here — that would put static vendor
+  # credentials in the container. The project .env is used only for Compose
+  # interpolation of CONDUIT_S2S_SECRET. For AUTH_MODE=env, pass the DUBBER_*
+  # variables on that process instead (see the README).
+  dubber-mcp:
+    build:
+      context: .
+      args:
+        GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      - MCP_TRANSPORT=http
+      - MCP_HTTP_PORT=8080
+      - MCP_HTTP_HOST=0.0.0.0
+      - AUTH_MODE=gateway
+      - CONDUIT_S2S_SECRET=${CONDUIT_S2S_SECRET:?set CONDUIT_S2S_SECRET}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
