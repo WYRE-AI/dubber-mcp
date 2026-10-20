@@ -94,6 +94,9 @@ async function gatewayLeg(expectedToolCount) {
       MCP_TRANSPORT: 'http',
       MCP_HTTP_PORT: String(GATEWAY_PORT),
       MCP_HTTP_HOST: '127.0.0.1',
+      // Loopback smoke process: exercise the credential gate, not S2S signing.
+      // HTTP startup otherwise refuses an empty CONDUIT_S2S_SECRET.
+      MCP_ALLOW_INSECURE_DEV: '1',
       LOG_LEVEL: 'error',
     },
     stdio: ['ignore', 'inherit', 'inherit'],
@@ -196,6 +199,8 @@ async function main() {
       MCP_TRANSPORT: 'http',
       MCP_HTTP_PORT: String(PORT),
       MCP_HTTP_HOST: '127.0.0.1',
+      // Loopback smoke process. HTTP startup refuses an empty CONDUIT_S2S_SECRET.
+      MCP_ALLOW_INSECURE_DEV: '1',
       // env-mode dummy credentials — tools/list never touches the vendor API
       DUBBER_CLIENT_ID: 'dummy-client-id',
       DUBBER_CLIENT_SECRET: 'dummy-client-secret',

@@ -50,12 +50,48 @@ Four values, all required — none of them a human login (see "Vendor quirks" be
 In gateway mode a request missing any of the four required headers is answered `401`
 (JSON-RPC error `-32001`) before the MCP handler runs. It never falls through to env
 credentials — a header-controlled base URL is likewise refused entirely (env-mode only), so
-a caller can never redirect client secrets to another host.
+a caller can never redirect client secrets to another host. Blank or repeated header values
+count as missing.
 
-When `CONDUIT_S2S_SECRET` is set (conduit provisions this sidecar's own derived subkey),
-every request except `/health` must also carry a valid `X-Gateway-S2S` HMAC header signed
-by the gateway, or it is answered `401`. This stops a compromised sibling sidecar from
-impersonating the gateway. Unset, the check is off (the fleet's dormant default).
+`/health` and `/healthz` stay unauthenticated and do not read credentials. The stdio
+transport does not use `CONDUIT_S2S_SECRET`.
+
+| Variable | Required | Description |
+|---|---|---|
+| `CONDUIT_S2S_SECRET` | Yes for HTTP | Service-to-service secret. The HTTP server logs an error and exits non-zero when this is empty or a known placeholder (`changeme`, `secret`, `replace-me`, `replace-with-a-real-secret`, and the other example values). Generate one with `openssl rand -hex 32`. Compose will not start without it. The value is never logged. |
+| `MCP_ALLOW_INSECURE_DEV` | No | Set to exactly `1` only for local development to start HTTP without `CONDUIT_S2S_SECRET`. The process logs a warning, does not enforce `X-Gateway-S2S`, and binds `127.0.0.1` only. A non-loopback `MCP_HTTP_HOST` (including `0.0.0.0`) is ignored and the override is logged. A known placeholder secret still refuses to start. |
+| `MCP_HTTP_HOST` | No | Bind address when a real `CONDUIT_S2S_SECRET` is set. Unset keeps `0.0.0.0`, the historical container bind. The image and Compose set `0.0.0.0` inside the container. |
+| `MCP_HTTP_PORT` | No | HTTP port. Defaults to `8080`. |
+| `AUTH_MODE` | No | `gateway` (Docker image and Compose) or `env`. Gateway mode requires the four `X-Dubber-*` credential headers on each `/mcp` request and never falls back to `DUBBER_*`. `env` uses those variables only after S2S auth succeeds. Unset means `env` (stdio and single-tenant HTTP outside the image). |
+
+### HTTP authentication
+
+With `MCP_TRANSPORT=http` and `CONDUIT_S2S_SECRET` set, every request except `/health` and
+`/healthz` must include `X-Gateway-S2S`. The check is `verifyS2sHeader` in
+[`src/s2s-verify.ts`](src/s2s-verify.ts): the header value is `t=<unix seconds>,v1=<hex>`,
+where the hex is HMAC-SHA256 of the literal string `t=<unix seconds>` keyed with
+`CONDUIT_S2S_SECRET` (64 lowercase hex characters). The timestamp must be within 300
+seconds of the server clock. A missing or invalid header is HTTP 401, before vendor
+credentials are read.
+
+```bash
+TS=$(date +%s)
+SIG=$(printf 't=%s' "$TS" | openssl dgst -sha256 -hmac "$CONDUIT_S2S_SECRET" -hex | awk '{print $NF}')
+curl -sS http://127.0.0.1:8080/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H "X-Gateway-S2S: t=${TS},v1=${SIG}" \
+  -H "X-Dubber-Client-Id: $DUBBER_CLIENT_ID" \
+  -H "X-Dubber-Client-Secret: $DUBBER_CLIENT_SECRET" \
+  -H "X-Dubber-Auth-Id: $DUBBER_AUTH_ID" \
+  -H "X-Dubber-Auth-Token: $DUBBER_AUTH_TOKEN" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+In `AUTH_MODE=gateway`, `/mcp` also requires `X-Dubber-Client-Id`, `X-Dubber-Client-Secret`,
+`X-Dubber-Auth-Id`, and `X-Dubber-Auth-Token` (`X-Dubber-Region` is optional). Those headers
+are the only credential source for that request. `AUTH_MODE=env` still requires the signed
+`X-Gateway-S2S` header, then uses `DUBBER_*` from the environment.
 
 ## Running
 
@@ -64,17 +100,44 @@ export NODE_AUTH_TOKEN=$(gh auth token)   # GitHub Packages auth for @wyre-ai/*
 npm install
 npm run build
 node dist/index.js                        # stdio (default)
-MCP_TRANSPORT=http node dist/index.js     # HTTP on :8080 (/mcp, /health)
+# HTTP refuses to start until CONDUIT_S2S_SECRET is set
+CONDUIT_S2S_SECRET="$CONDUIT_S2S_SECRET" MCP_TRANSPORT=http node dist/index.js
+# Local HTTP only, without a service-to-service secret (always binds 127.0.0.1)
+MCP_TRANSPORT=http MCP_ALLOW_INSECURE_DEV=1 node dist/index.js
 npm run smoke                             # proves both protocol eras serve the same tools
 ```
 
-Docker (linux/amd64 per fleet law):
+Docker (linux/amd64 per fleet law). The image listens on `0.0.0.0` inside the container
+(`MCP_HTTP_HOST`) and defaults to `AUTH_MODE=gateway`. Publish the port on loopback and
+pass a real S2S secret. In gateway mode, Dubber credentials arrive on each request as
+headers; they are not read from the environment.
 
 ```bash
 docker build --platform linux/amd64 --build-arg GITHUB_TOKEN=$(gh auth token) -t dubber-mcp .
-docker run -p 8080:8080 \
+docker run \
+  -e CONDUIT_S2S_SECRET="$CONDUIT_S2S_SECRET" \
+  -p 127.0.0.1:8080:8080 \
+  dubber-mcp
+```
+
+Compose refuses to start when `CONDUIT_S2S_SECRET` is unset. The gateway service sets
+`AUTH_MODE=gateway`, does not inject `DUBBER_CLIENT_ID`, `DUBBER_CLIENT_SECRET`,
+`DUBBER_AUTH_ID`, or `DUBBER_AUTH_TOKEN`, and publishes `127.0.0.1:8080:8080`:
+
+```bash
+CONDUIT_S2S_SECRET="$CONDUIT_S2S_SECRET" docker compose up
+```
+
+Single-tenant HTTP (`AUTH_MODE=env`) still requires the S2S secret, then uses the
+`DUBBER_*` variables. It is separate from the gateway Compose service above.
+
+```bash
+docker run \
+  -e CONDUIT_S2S_SECRET="$CONDUIT_S2S_SECRET" \
+  -e AUTH_MODE=env \
   -e DUBBER_CLIENT_ID=... -e DUBBER_CLIENT_SECRET=... \
   -e DUBBER_AUTH_ID=... -e DUBBER_AUTH_TOKEN=... \
+  -p 127.0.0.1:8080:8080 \
   dubber-mcp
 ```
 
