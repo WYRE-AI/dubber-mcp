@@ -93,6 +93,20 @@ function headerValue(value: string | string[] | undefined): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+/**
+ * Read a gateway credential header that must appear exactly once. Node joins
+ * repeated headers with ", " in req.headers, which would turn two credentials
+ * into one comma-joined value, so count occurrences in rawHeaders first.
+ */
+function singleGatewayHeader(req: IncomingMessage, lowerName: string): string | undefined {
+  let occurrences = 0;
+  for (let index = 0; index < req.rawHeaders.length; index += 2) {
+    if (req.rawHeaders[index]?.toLowerCase() === lowerName) occurrences += 1;
+  }
+  if (occurrences !== 1) return undefined;
+  return headerValue(req.headers[lowerName]);
+}
+
 /** 127.0.0.1, the rest of 127.0.0.0/8, localhost, and ::1. */
 function isLoopbackBindHost(host: string): boolean {
   const normalized = host.trim().toLowerCase().replace(/^\[(.+)\]$/, "$1");
@@ -218,7 +232,7 @@ export async function startHttpTransport(): Promise<HttpServer> {
       // operator's tenant data to whoever asked (cross-tenant leak).
       // Blank or repeated headers count as missing.
       if (isGatewayMode) {
-        const { error } = resolveGatewayCredentials((name) => headerValue(req.headers[name]));
+        const { error } = resolveGatewayCredentials((name) => singleGatewayHeader(req, name.toLowerCase()));
         if (error) {
           res.writeHead(401, { "Content-Type": "application/json" });
           res.end(

@@ -446,6 +446,37 @@ describe("HTTP /mcp authentication", () => {
     expect(constructed.configs).toEqual([]);
   });
 
+  it("rejects a gateway credential header sent more than once", async () => {
+    const server = await listen();
+    const { request } = await import("node:http");
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = request(
+        {
+          hostname: "127.0.0.1",
+          port: server.port,
+          path: "/mcp",
+          method: "POST",
+          headers: {
+            ...mcpHeaders({ "x-gateway-s2s": mintS2sHeader(S2S_SECRET) }),
+            // Two separate header lines; Node would join them as "a, b".
+            "x-dubber-client-id": ["header-client-id", "other-client-id"],
+            "x-dubber-client-secret": "header-client-secret",
+            "x-dubber-auth-id": "header-auth-id",
+            "x-dubber-auth-token": "header-auth-token",
+          },
+        },
+        (res) => {
+          res.resume();
+          res.on("end", () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on("error", reject);
+      req.end(statusCall);
+    });
+    expect(status).toBe(401);
+    expect(constructed.configs).toEqual([]);
+  });
+
   it("accepts a valid S2S header plus credential headers and uses those credentials", async () => {
     const logs = captureStderr();
     try {
