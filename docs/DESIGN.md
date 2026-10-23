@@ -90,7 +90,9 @@ default 100) and `offset` with real semantics by walking the newest-first list w
 `count=100` + `before_id`, skipping `offset` matches, collecting `limit`. `startTimeFrom`
 (inclusive) / `startTimeTo` (exclusive; date-only = whole UTC day) filter on `start_time`
 (RFC 2822) server-side. Bounds: 25 Dubber requests (2,500 scanned) per call, then
-`scanCapReached` + `nextCursor` (last examined recording id, used as `before_id`). The scan
+`scanCapReached` + `nextCursor` (last examined recording id, used as `before_id`) +
+`remainingOffset` (offset still unskipped at stop time, 0 once skipping finished); continue with
+`cursor=nextCursor` and `offset=remainingOffset`. The scan
 also ends on an empty/short page, or — with `startTimeFrom` — a page whose recordings all
 start before it (start_time order within the list isn't guaranteed, hence whole-page). The
 SDK 1.0.0 call is made through one cast in `src/handlers/recordings-list.ts`

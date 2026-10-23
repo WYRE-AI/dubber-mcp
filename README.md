@@ -172,10 +172,11 @@ params. `dubber_recordings_list` therefore pages Dubber itself (`count=100`, cha
   `startTimeFrom=2026-10-19T00:00:00+11:00`, `startTimeTo=2026-10-24T00:00:00+11:00`, `limit=500`.
 - Each call makes at most 25 Dubber requests (2,500 recordings scanned). If that cap or
   `limit` stops the scan early, `hasMore` is true and `nextCursor` is set: call again with
-  `cursor=<nextCursor>`, `offset=0` and the same filters to continue with no gaps or duplicates.
+  `cursor=<nextCursor>`, `offset=<remainingOffset>` (0 unless the scan cap hit while still
+  skipping) and the same filters to continue with no gaps or duplicates.
   `scanCapReached` says whether the cap was the reason. With `startTimeFrom` set, the scan
   stops once a whole page of recordings starts before it.
-- Result: `{ recordings, returned, hasMore, nextCursor, scanned, requests, scanCapReached,
+- Result: `{ recordings, returned, hasMore, nextCursor, remainingOffset, scanned, requests, scanCapReached,
   filters, note }`.
 
 The handler sends Dubber's params through a single cast over `@wyre-ai/node-dubber` 1.0.0
