@@ -25,7 +25,7 @@ caller. Ships as a GHCR container only (no MCPB bundle). The Dubber client is
   Gated: `dubber_recordings_delete` (⚠ DESTRUCTIVE), `dubber_recordings_delete_tags`
   (⚠ HIGH-IMPACT).
   `dubber_recordings_list` lists newest first with `limit` (1–500, default 100), `offset`,
-  `cursor`, `query`, and a `start_time` window — see
+  `cursor`, `query`, `dubPointId`/`teamId`, and a `start_time` window — see
   [Listing recordings](#listing-recordings-and-time-windows).
 - **Users**: `dubber_users_list`, `dubber_users_create`, `dubber_users_get`,
   `dubber_users_update`. Gated: `dubber_users_delete` (⚠ DESTRUCTIVE).
@@ -170,6 +170,12 @@ params. `dubber_recordings_list` therefore pages Dubber itself (`count=100`, cha
   `start_time` after fetching; recordings with an unparseable `start_time` are excluded and
   counted in `excludedUnparseableStartTime`. Weekly pull in Melbourne daylight time (AEDT, +11:00), Mon–Fri:
   `startTimeFrom=2026-10-19T00:00:00+11:00`, `startTimeTo=2026-10-24T00:00:00+11:00`, `limit=500`.
+- `dubPointId` / `teamId` (optional, trimmed, non-empty; sent as Dubber's `dub_point` / `team` on
+  every page request and echoed in `filters`): one dub point or one team per call — Dubber
+  forbids combining them, so passing both is an error. Dubber has no direct user filter on
+  recordings: for one technician's week, find their dub point id(s) with `dubber_dub_points_list`
+  (each dub point's `user` is a URL ending in `/users/<USER_ID>`), then call once per dub point.
+  A `cursor` must be reused with the SAME `dubPointId`/`teamId`.
 - Each call makes at most 25 Dubber requests (2,500 recordings scanned). If that cap or
   `limit` stops the scan early, `hasMore` is true and `nextCursor` is set: call again with
   `cursor=<nextCursor>`, `offset=0` and the same filters to continue with no gaps or duplicates.

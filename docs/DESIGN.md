@@ -93,7 +93,11 @@ default 100) and `offset` with real semantics by walking the newest-first list w
 `scanCapReached` + `nextCursor` (last examined recording id, used as `before_id`). The scan
 also ends on an empty/short page, or — with `startTimeFrom` — a page whose recordings all
 start before it (start_time order within the list isn't guaranteed, hence whole-page). The
-SDK 1.0.0 call is made through one cast in `src/handlers/recordings-list.ts`
+`dubPointId` / `teamId` inputs map to Dubber's `dub_point` / `team`, are sent on every page request
+(same cursor ⇒ same value) and echoed in `filters`; blank values or both together are a
+`ToolInputError` (Dubber forbids combining them). There is no user filter on recordings: resolve a
+user's dub points via `dubber_dub_points_list` (`user` URL ends `/users/<USER_ID>`), one call per
+dub point. The SDK 1.0.0 call is made through one cast in `src/handlers/recordings-list.ts`
 (`fetchRecordingsPage`), since the SDK types `{limit, offset}` but forwards keys verbatim.
 Tool count stays 37.
 

@@ -133,6 +133,15 @@ describe("recordings: reads and ungated writes", () => {
     expect(params).not.toHaveProperty("offset");
   });
 
+  it("dubber_recordings_list maps dubPointId/teamId to dub_point/team", async () => {
+    const dp = stubClient();
+    await handleToolCall(dp, "dubber_recordings_list", { accountId: "acc-1", dubPointId: " dp-9 " });
+    expect(dp.recordings.list).toHaveBeenCalledWith("acc-1", { count: 100, dub_point: "dp-9" });
+    const team = stubClient();
+    await handleToolCall(team, "dubber_recordings_list", { accountId: "acc-1", teamId: "t-1" });
+    expect(team.recordings.list).toHaveBeenCalledWith("acc-1", { count: 100, team: "t-1" });
+  });
+
   it("dubber_recordings_list omits before_id/query when not provided", async () => {
     const client = stubClient();
     await handleToolCall(client, "dubber_recordings_list", { accountId: "acc-1" });

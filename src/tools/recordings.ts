@@ -15,7 +15,11 @@ export const RECORDINGS_TOOLS: Tool[] = [
       "startTimeTo is EXCLUSIVE for date-times, but a date-only startTimeTo includes that whole day. " +
       "Dates without an offset are UTC, so pass explicit offsets for local weeks. Example, Mon–Fri week " +
       "in Melbourne daylight time (AEDT, +11:00): startTimeFrom=2026-10-19T00:00:00+11:00, startTimeTo=2026-10-24T00:00:00+11:00, limit=500 " +
-      "(or in UTC: startTimeFrom=2026-10-19, startTimeTo=2026-10-23).",
+      "(or in UTC: startTimeFrom=2026-10-19, startTimeTo=2026-10-23). " +
+      "Scope to ONE dub point (dubPointId) or ONE team (teamId), never both: Dubber has no direct user filter " +
+      "on recordings. To get one technician's week, find their dub point id(s) with dubber_dub_points_list " +
+      "(each dub point's `user` field is a URL ending in /users/<USER_ID>), then call once per dub point. " +
+      "A cursor must be reused with the SAME dubPointId/teamId.",
     inputSchema: {
       type: "object",
       properties: {
@@ -52,6 +56,18 @@ export const RECORDINGS_TOOLS: Tool[] = [
             "A date-only value includes that entire day (UTC). Filtered server-side after fetching.",
         },
         query: { type: "string", description: "Search string passed to Dubber's `query` parameter." },
+        dubPointId: {
+          type: "string",
+          description:
+            "Only recordings for this dub point (Dubber `dub_point`). One dub point per call; cannot be " +
+            "combined with teamId. Get ids from dubber_dub_points_list. Reuse the same value with a cursor.",
+        },
+        teamId: {
+          type: "string",
+          description:
+            "Only recordings for dub points in this team (Dubber `team`). One team per call; cannot be " +
+            "combined with dubPointId. Reuse the same value with a cursor.",
+        },
       },
       required: ["accountId"],
     },
