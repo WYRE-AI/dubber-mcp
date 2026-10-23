@@ -24,6 +24,9 @@ caller. Ships as a GHCR container only (no MCPB bundle). The Dubber client is
   `dubber_recordings_get_upload_target`, `dubber_recordings_complete_upload`.
   Gated: `dubber_recordings_delete` (⚠ DESTRUCTIVE), `dubber_recordings_delete_tags`
   (⚠ HIGH-IMPACT).
+  `dubber_recordings_list` lists newest first with `limit` (1–500, default 100), `offset`,
+  `cursor`, `query`, and a `start_time` window — see
+  [Listing recordings](#listing-recordings-and-time-windows).
 - **Users**: `dubber_users_list`, `dubber_users_create`, `dubber_users_get`,
   `dubber_users_update`. Gated: `dubber_users_delete` (⚠ DESTRUCTIVE).
 - **Profile**: `dubber_profile_get`.
@@ -152,6 +155,32 @@ Callers that cannot be prompted (including stateless legacy HTTP requests, which
 WYRE Conduit gateway connects) fail closed: gated tools refuse to run unless the call passes
 `"confirm_destructive_action": true`. That argument is consulted only when no prompt is
 possible and never skips a confirmation an interactive user would have seen.
+
+## Listing recordings and time windows
+
+Dubber's recordings endpoint has only `count` (max 100), `page` (max 5 pages), a `before_id`
+cursor and `query` — no `limit`/`offset` and no date filter, and it silently ignores unknown
+params. `dubber_recordings_list` therefore pages Dubber itself (`count=100`, chaining
+`before_id`) and applies the rest server-side:
+
+- `limit` (1–500, default 100): max matching recordings returned. `offset` (≥0): matching
+  recordings (newest first) to skip.
+- `startTimeFrom` (inclusive) / `startTimeTo` (exclusive for date-times; a date-only value
+  includes the whole day): ISO 8601, no offset = UTC. They filter on each recording's
+  `start_time` after fetching; recordings with an unparseable `start_time` are excluded and
+  counted in `excludedUnparseableStartTime`. Weekly pull in Melbourne daylight time (AEDT, +11:00), Mon–Fri:
+  `startTimeFrom=2026-10-19T00:00:00+11:00`, `startTimeTo=2026-10-24T00:00:00+11:00`, `limit=500`.
+- Each call makes at most 25 Dubber requests (2,500 recordings scanned). If that cap or
+  `limit` stops the scan early, `hasMore` is true and `nextCursor` is set: call again with
+  `cursor=<nextCursor>`, `offset=0` and the same filters to continue with no gaps or duplicates.
+  `scanCapReached` says whether the cap was the reason. With `startTimeFrom` set, the scan
+  stops once a whole page of recordings starts before it.
+- Result: `{ recordings, returned, hasMore, nextCursor, scanned, requests, scanCapReached,
+  filters, note }`.
+
+The handler sends Dubber's params through a single cast over `@wyre-ai/node-dubber` 1.0.0
+(whose typed params are `{limit, offset}`); drop the cast when the SDK release that types
+`count`/`before_id`/`query` is adopted.
 
 ## Vendor quirks encoded here
 

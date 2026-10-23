@@ -113,10 +113,75 @@ describe("recordings: reads and ungated writes", () => {
     expect(text(result)).toContain("No recordings found");
   });
 
-  it("dubber_recordings_list forwards limit/offset", async () => {
+  it("dubber_recordings_list maps to Dubber count/before_id and never sends limit/offset", async () => {
     const client = stubClient();
-    await handleToolCall(client, "dubber_recordings_list", { accountId: "acc-1", limit: 10, offset: 5 });
-    expect(client.recordings.list).toHaveBeenCalledWith("acc-1", { limit: 10, offset: 5 });
+    await handleToolCall(client, "dubber_recordings_list", {
+      accountId: "acc-1",
+      limit: 10,
+      offset: 5,
+      cursor: "rec-77",
+      query: "alice",
+    });
+    expect(client.recordings.list).toHaveBeenCalledTimes(1);
+    expect(client.recordings.list).toHaveBeenCalledWith("acc-1", {
+      count: 100,
+      before_id: "rec-77",
+      query: "alice",
+    });
+    const params = vi.mocked(client.recordings.list).mock.calls[0]![1] as Record<string, unknown>;
+    expect(params).not.toHaveProperty("limit");
+    expect(params).not.toHaveProperty("offset");
+  });
+
+  it("dubber_recordings_list omits before_id/query when not provided", async () => {
+    const client = stubClient();
+    await handleToolCall(client, "dubber_recordings_list", { accountId: "acc-1" });
+    expect(client.recordings.list).toHaveBeenCalledWith("acc-1", { count: 100 });
+  });
+
+  it.each([
+    [{ limit: 0 }, 'Argument "limit"'],
+    [{ limit: 501 }, 'Argument "limit"'],
+    [{ offset: -1 }, 'Argument "offset"'],
+    [{ cursor: "  " }, 'Argument "cursor"'],
+    [{ startTimeFrom: "yesterday" }, 'Argument "startTimeFrom"'],
+    [{ startTimeTo: "2026-02-31" }, 'Argument "startTimeTo"'],
+    [{ startTimeFrom: "2026-10-24", startTimeTo: "2026-10-19" }, "must be earlier"],
+    [{ startTimeFrom: "2026-10-19T00:00:00Z", startTimeTo: "2026-10-19T00:00:00Z" }, "must be earlier"],
+  ])("dubber_recordings_list rejects invalid input %j", async (extra, message) => {
+    const client = stubClient();
+    const result = await handleToolCall(client, "dubber_recordings_list", { accountId: "acc-1", ...extra });
+    expect(asTool(result).isError).toBe(true);
+    expect(text(result)).toContain(message);
+    expect(client.recordings.list).not.toHaveBeenCalled();
+  });
+
+  it("dubber_recordings_list stops on a short page and reports counts and filters", async () => {
+    const client = stubClient({
+      recordings: {
+        list: vi.fn(async () => [
+          { id: "r2", start_time: "Mon, 19 Oct 2026 10:00:00 +1000" },
+          { id: "r1", start_time: "garbage" },
+        ]),
+      },
+    });
+    const result = await handleToolCall(client, "dubber_recordings_list", {
+      accountId: "acc-1",
+      startTimeFrom: "2026-10-19T00:00:00+10:00",
+    });
+    const body = JSON.parse(text(result));
+    expect(body.recordings.map((r: { id: string }) => r.id)).toEqual(["r2"]);
+    expect(body).toMatchObject({
+      returned: 1,
+      hasMore: false,
+      nextCursor: null,
+      scanned: 2,
+      requests: 1,
+      scanCapReached: false,
+      excludedUnparseableStartTime: 1,
+    });
+    expect(body.filters.startTimeFrom).toBe("2026-10-18T14:00:00.000Z");
+    expect(body.note).toContain("unparseable");
   });
 
   it("dubber_recordings_add_tags requires a non-empty tags array", async () => {
