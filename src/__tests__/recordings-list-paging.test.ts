@@ -106,6 +106,7 @@ interface ListResult {
   returned: number;
   hasMore: boolean;
   nextCursor: string | null;
+  remainingOffset: number;
   scanned: number;
   requests: number;
   scanCapReached: boolean;
@@ -351,8 +352,11 @@ describe("dubber_recordings_list paging (real DubberClient, mocked fetch)", () =
     const first = await list(client, { offset: 2700, limit: 50 });
     expect(first.scanCapReached).toBe(true);
     expect(first.returned).toBe(0);
-    // Offset consumed by the first call is not carried over: resume with the remaining 200.
-    const second = await list(client, { offset: 200, limit: 50, cursor: first.nextCursor! });
+    // 2,500 of the 2,700 were skipped; the caller must resume with the remaining 200.
+    expect(first.remainingOffset).toBe(200);
+    expect(first.note).toContain('offset=200');
+    const second = await list(client, { offset: first.remainingOffset, limit: 50, cursor: first.nextCursor! });
+    expect(second.remainingOffset).toBe(0);
     expect(ids(second)).toEqual(all.slice(2700, 2750).map((x) => x.id));
   });
 

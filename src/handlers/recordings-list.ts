@@ -243,9 +243,9 @@ export async function listRecordings(client: DubberClient, args: Record<string, 
   if (scanCapReached) {
     note =
       `Scan cap reached (${requests} Dubber requests, ${scanned} recordings examined) before the limit was met. ` +
-      `Call again with cursor="${nextCursor}" and offset=0 (same filters) to continue.`;
+      `Call again with cursor="${nextCursor}" and offset=${toSkip} (same filters) to continue.`;
   } else if (hasMore) {
-    note = `More recordings may exist. Call again with cursor="${nextCursor}" and offset=0 (same filters) to continue.`;
+    note = `More recordings may exist. Call again with cursor="${nextCursor}" and offset=${toSkip} (same filters) to continue.`;
   } else if (recordings.length === 0) {
     note = "No recordings found.";
   }
@@ -259,6 +259,7 @@ export async function listRecordings(client: DubberClient, args: Record<string, 
     returned: recordings.length,
     hasMore,
     nextCursor,
+    remainingOffset: toSkip,
     scanned,
     requests,
     scanCapReached,

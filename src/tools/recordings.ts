@@ -8,8 +8,8 @@ export const RECORDINGS_TOOLS: Tool[] = [
     description:
       "List call recordings for a Dubber account, NEWEST FIRST. `limit` (default 100, max 500) is the max " +
       "matching recordings to return; `offset` skips that many matching recordings from the newest. " +
-      "If the result has hasMore=true, call again with cursor=<nextCursor> and offset=0 (same filters) to " +
-      "continue with no gaps or duplicates. Dubber has NO date filter: startTimeFrom/startTimeTo are " +
+      "If the result has hasMore=true, call again with cursor=<nextCursor> and offset=<remainingOffset> (same filters; " +
+      "remainingOffset is 0 unless the scan cap hit while still skipping) to continue with no gaps or duplicates. Dubber has NO date filter: startTimeFrom/startTimeTo are " +
       "applied by this server after fetching pages (each tool call scans at most 2,500 recordings / 25 " +
       "Dubber requests; scanCapReached=true means continue with nextCursor). startTimeFrom is inclusive; " +
       "startTimeTo is EXCLUSIVE for date-times, but a date-only startTimeTo includes that whole day. " +
@@ -41,7 +41,7 @@ export const RECORDINGS_TOOLS: Tool[] = [
           type: "string",
           description:
             "Continue from a previous result's nextCursor (a Dubber recording id used as before_id). " +
-            "Use with offset=0 and the same filters.",
+            "Use with offset=remainingOffset from that result (0 unless the scan cap hit while still skipping) and the same filters.",
         },
         startTimeFrom: {
           type: "string",
