@@ -1,9 +1,9 @@
 import type { DubberClient } from "@wyre-ai/node-dubber";
 import { confirmDestructive, type ElicitationContext } from "../elicitation.js";
+import { listRecordings } from "./recordings-list.js";
 import {
   errorResult,
   jsonResult,
-  optionalInteger,
   optionalObject,
   requireObject,
   requireString,
@@ -14,15 +14,6 @@ import {
 } from "./results.js";
 
 const CANCELLED = "Cancelled — nothing was changed.";
-
-async function list(client: DubberClient, args: Record<string, unknown>): Promise<ToolResult> {
-  const accountId = requireString(args, "accountId");
-  const limit = optionalInteger(args, "limit");
-  const offset = optionalInteger(args, "offset");
-  const recordings = await client.recordings.list(accountId, { limit, offset });
-  if (recordings.length === 0) return jsonResult({ recordings: [], note: "No recordings found." });
-  return jsonResult(recordings);
-}
 
 async function create(client: DubberClient, args: Record<string, unknown>): Promise<ToolResult> {
   const accountId = requireString(args, "accountId");
@@ -103,7 +94,7 @@ async function completeUpload(client: DubberClient, args: Record<string, unknown
 }
 
 export const RECORDINGS_HANDLERS: Record<string, ToolHandler> = {
-  dubber_recordings_list: list,
+  dubber_recordings_list: listRecordings,
   dubber_recordings_create: create,
   dubber_recordings_get: get,
   dubber_recordings_get_waveform: getWaveform,

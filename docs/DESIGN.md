@@ -81,6 +81,24 @@ the refresh token — Dubber's refresh-grant contract isn't documented
 anywhere verifiable, matching node-kpn's existing choice under the same
 constraint. See `node-dubber`'s `src/auth.ts` for the full rationale.
 
+### Recordings list paging (WYREAI-567)
+
+`GET /accounts/:id/recordings` supports only `count` (≤100), `page` (≤5 pages), `before_id`,
+`after_id`, `query`, `dub_point`, `team`; it has no limit/offset and no date filter, and
+ignores unknown params. `dubber_recordings_list` (name unchanged) keeps `limit` (≤500,
+default 100) and `offset` with real semantics by walking the newest-first list with
+`count=100` + `before_id`, skipping `offset` matches, collecting `limit`. `startTimeFrom`
+(inclusive) / `startTimeTo` (exclusive; date-only = whole UTC day) filter on `start_time`
+(RFC 2822) server-side. Bounds: 25 Dubber requests (2,500 scanned) per call, then
+`scanCapReached` + `nextCursor` (last examined recording id, used as `before_id`) +
+`remainingOffset` (offset still unskipped at stop time, 0 once skipping finished); continue with
+`cursor=nextCursor` and `offset=remainingOffset`. The scan
+also ends on an empty/short page, or — with `startTimeFrom` — a page whose recordings all
+start before it (start_time order within the list isn't guaranteed, hence whole-page). The
+SDK 1.0.0 call is made through one cast in `src/handlers/recordings-list.ts`
+(`fetchRecordingsPage`), since the SDK types `{limit, offset}` but forwards keys verbatim.
+Tool count stays 37.
+
 ## 4. API-surface confidence
 
 Dubber does not publish a downloadable OpenAPI/Swagger spec. Every endpoint

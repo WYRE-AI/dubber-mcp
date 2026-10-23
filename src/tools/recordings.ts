@@ -5,13 +5,53 @@ import { CONFIRM_ARG_PROPERTY } from "../elicitation.js";
 export const RECORDINGS_TOOLS: Tool[] = [
   {
     name: "dubber_recordings_list",
-    description: "List call recordings for a Dubber account.",
+    description:
+      "List call recordings for a Dubber account, NEWEST FIRST. `limit` (default 100, max 500) is the max " +
+      "matching recordings to return; `offset` skips that many matching recordings from the newest. " +
+      "If the result has hasMore=true, call again with cursor=<nextCursor> and offset=<remainingOffset> (same filters; " +
+      "remainingOffset is 0 unless the scan cap hit while still skipping) to continue with no gaps or duplicates. Dubber has NO date filter: startTimeFrom/startTimeTo are " +
+      "applied by this server after fetching pages (each tool call scans at most 2,500 recordings / 25 " +
+      "Dubber requests; scanCapReached=true means continue with nextCursor). startTimeFrom is inclusive; " +
+      "startTimeTo is EXCLUSIVE for date-times, but a date-only startTimeTo includes that whole day. " +
+      "Dates without an offset are UTC, so pass explicit offsets for local weeks. Example, Mon–Fri week " +
+      "in Melbourne daylight time (AEDT, +11:00): startTimeFrom=2026-10-19T00:00:00+11:00, startTimeTo=2026-10-24T00:00:00+11:00, limit=500 " +
+      "(or in UTC: startTimeFrom=2026-10-19, startTimeTo=2026-10-23).",
     inputSchema: {
       type: "object",
       properties: {
         accountId: { type: "string", description: "Dubber account ID." },
-        limit: { type: "integer", minimum: 1, description: "Max results." },
-        offset: { type: "integer", minimum: 0, description: "Pagination offset." },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 500,
+          default: 100,
+          description: "Max matching recordings to return (1-500, default 100).",
+        },
+        offset: {
+          type: "integer",
+          minimum: 0,
+          default: 0,
+          description: "Number of matching recordings (newest first) to skip before collecting. Default 0.",
+        },
+        cursor: {
+          type: "string",
+          description:
+            "Continue from a previous result's nextCursor (a Dubber recording id used as before_id). " +
+            "Use with offset=remainingOffset from that result (0 unless the scan cap hit while still skipping) and the same filters.",
+        },
+        startTimeFrom: {
+          type: "string",
+          description:
+            "ISO 8601 date or date-time; keep recordings whose start_time is at or after this (inclusive). " +
+            "No offset = UTC. Filtered server-side after fetching.",
+        },
+        startTimeTo: {
+          type: "string",
+          description:
+            "ISO 8601 date or date-time; keep recordings whose start_time is before this (exclusive). " +
+            "A date-only value includes that entire day (UTC). Filtered server-side after fetching.",
+        },
+        query: { type: "string", description: "Search string passed to Dubber's `query` parameter." },
       },
       required: ["accountId"],
     },
