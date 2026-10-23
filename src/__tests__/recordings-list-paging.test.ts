@@ -21,6 +21,8 @@ const WEEK_TO = "2026-10-24T00:00:00+10:00";
 interface FakeRec {
   id: string;
   to: string;
+  dub_point: string;
+  team: string;
   start_time: string;
   ms: number;
 }
@@ -33,7 +35,16 @@ function rfc2822(ms: number): string {
 function dataset(n: number): FakeRec[] {
   return Array.from({ length: n }, (_, i) => {
     const ms = NEWEST_MS - i * STEP_MS;
-    return { id: `rec-${String(i).padStart(5, "0")}`, to: i % 2 ? "+61400000001" : "+61400000002", start_time: rfc2822(ms), ms };
+    // 4 dub points (i % 4) in 2 teams: dp-0,dp-1 -> team-a; dp-2,dp-3 -> team-b.
+    const dp = i % 4;
+    return {
+      id: `rec-${String(i).padStart(5, "0")}`,
+      to: i % 2 ? "+61400000001" : "+61400000002",
+      dub_point: `dp-${dp}`,
+      team: dp < 2 ? "team-a" : "team-b",
+      start_time: rfc2822(ms),
+      ms,
+    };
   });
 }
 
@@ -63,6 +74,10 @@ function installFakeDubber(all: FakeRec[]): FakeDubber {
       if (beforeId) rows = rows.slice(rows.findIndex((r) => r.id === beforeId) + 1);
       if (afterId) rows = rows.slice(0, rows.findIndex((r) => r.id === afterId));
       const q = url.searchParams.get("query");
+      const dubPoint = url.searchParams.get("dub_point");
+      const team = url.searchParams.get("team");
+      if (dubPoint) rows = rows.filter((r) => r.dub_point === dubPoint);
+      if (team) rows = rows.filter((r) => r.team === team);
       if (q) rows = rows.filter((r) => r.to.includes(q));
       const count = Math.min(Number(url.searchParams.get("count") ?? 20), 100);
       // limit / offset / page / anything else: silently ignored, like Dubber.
@@ -132,6 +147,77 @@ describe("dubber_recordings_list paging (real DubberClient, mocked fetch)", () =
       expect([...url.searchParams.keys()].every((k) => ["count", "before_id", "query"].includes(k))).toBe(true);
     }
     expect(fake.requests[0]!.searchParams.has("before_id")).toBe(false);
+  });
+
+  it("dubPointId + time window + paging past 100 returns exactly that dub point's recordings", async () => {
+    const from = Date.parse(WEEK_FROM);
+    const to = Date.parse(WEEK_TO);
+    const expected = all.filter((x) => x.dub_point === "dp-1" && x.ms >= from && x.ms < to).map((x) => x.id);
+    expect(expected.length).toBe(120); // 480 in window / 4 dub points
+    const client = realClient();
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    let first: ListResult | undefined;
+    for (let guard = 0; guard < 20; guard++) {
+      const r = await list(client, {
+        dubPointId: " dp-1 ",
+        startTimeFrom: WEEK_FROM,
+        startTimeTo: WEEK_TO,
+        limit: 50,
+        ...(cursor ? { cursor } : {}),
+      });
+      first ??= r;
+      seen.push(...ids(r));
+      if (!r.hasMore) break;
+      cursor = r.nextCursor!;
+    }
+    expect(seen).toEqual(expected);
+    expect(first!.filters["dubPointId"]).toBe("dp-1");
+    expect(first!.filters["teamId"]).toBeNull();
+    // The week spans well over 100 recordings of the account, so paging crossed Dubber pages.
+    expect(fake.requests.length).toBeGreaterThan(3);
+    for (const url of fake.requests) {
+      expect(url.searchParams.get("dub_point")).toBe("dp-1");
+      expect(url.searchParams.has("team")).toBe(false);
+    }
+  });
+
+  it("every page request of a multi-page call carries dub_point", async () => {
+    const r = await list(realClient(), { dubPointId: "dp-2", limit: 250 });
+    expect(r.requests).toBeGreaterThan(1);
+    expect(fake.requests).toHaveLength(r.requests);
+    for (const url of fake.requests) expect(url.searchParams.get("dub_point")).toBe("dp-2");
+    expect(ids(r)).toEqual(all.filter((x) => x.dub_point === "dp-2").slice(0, 250).map((x) => x.id));
+  });
+
+  it("teamId filters by team, sends team on every page, and echoes it", async () => {
+    const r = await list(realClient(), { teamId: "team-b", limit: 300 });
+    expect(ids(r)).toEqual(all.filter((x) => x.team === "team-b").slice(0, 300).map((x) => x.id));
+    expect(r.filters["teamId"]).toBe("team-b");
+    expect(r.filters["dubPointId"]).toBeNull();
+    expect(r.requests).toBeGreaterThan(1);
+    for (const url of fake.requests) {
+      expect(url.searchParams.get("team")).toBe("team-b");
+      expect(url.searchParams.has("dub_point")).toBe(false);
+    }
+  });
+
+  it("rejects dubPointId together with teamId, and empty values, without fetching", async () => {
+    const client = realClient();
+    const both = (await handleToolCall(client, "dubber_recordings_list", {
+      accountId: ACCOUNT,
+      dubPointId: "dp-1",
+      teamId: "team-a",
+    })) as ToolResult;
+    expect(both.isError).toBe(true);
+    expect(JSON.stringify(both.content)).toContain("cannot be combined");
+    for (const args of [{ dubPointId: "  " }, { teamId: "" }]) {
+      const r = (await handleToolCall(client, "dubber_recordings_list", { accountId: ACCOUNT, ...args })) as ToolResult;
+      expect(r.isError).toBe(true);
+      expect(JSON.stringify(r.content)).toContain("non-empty");
+    }
+    expect(fake.requests).toHaveLength(0);
+    expect(fake.tokenCalls).toBe(0);
   });
 
   it("returns the newest N for limit alone (not just Dubber's default 20)", async () => {

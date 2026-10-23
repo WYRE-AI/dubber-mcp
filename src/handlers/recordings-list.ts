@@ -30,6 +30,8 @@ export interface RecordingsPageParams {
   count: number;
   before_id?: string;
   query?: string;
+  dub_point?: string;
+  team?: string;
 }
 
 /**
@@ -123,6 +125,16 @@ function intInRange(
   return value;
 }
 
+/** Optional non-empty string arg, trimmed. Empty/blank strings are rejected. */
+function optionalId(args: Record<string, unknown>, key: string): string | undefined {
+  if (args[key] === undefined || args[key] === null) return undefined;
+  const raw = optionalString(args, key);
+  if (raw === undefined || raw.trim() === "") {
+    throw new ToolInputError(`Argument "${key}" must be a non-empty string when provided.`);
+  }
+  return raw.trim();
+}
+
 export async function listRecordings(client: DubberClient, args: Record<string, unknown>): Promise<ToolResult> {
   const accountId = requireString(args, "accountId");
   const limit = intInRange(args, "limit", 1, MAX_LIMIT, DEFAULT_LIMIT);
@@ -137,6 +149,13 @@ export async function listRecordings(client: DubberClient, args: Record<string, 
     cursor = raw.trim();
   }
   const query = optionalString(args, "query")?.trim() || undefined;
+  const dubPointId = optionalId(args, "dubPointId");
+  const teamId = optionalId(args, "teamId");
+  if (dubPointId !== undefined && teamId !== undefined) {
+    throw new ToolInputError(
+      'Arguments "dubPointId" and "teamId" cannot be combined (Dubber forbids dub_point with team); pass one.'
+    );
+  }
 
   const fromRaw = optionalString(args, "startTimeFrom");
   const toRaw = optionalString(args, "startTimeTo");
@@ -167,6 +186,8 @@ export async function listRecordings(client: DubberClient, args: Record<string, 
     const params: RecordingsPageParams = { count: DUBBER_PAGE_SIZE };
     if (beforeId !== undefined) params.before_id = beforeId;
     if (query !== undefined) params.query = query;
+    if (dubPointId !== undefined) params.dub_point = dubPointId;
+    if (teamId !== undefined) params.team = teamId;
     const page = await fetchRecordingsPage(client, accountId, params);
     requests += 1;
     if (page.length === 0) break;
@@ -248,6 +269,8 @@ export async function listRecordings(client: DubberClient, args: Record<string, 
       offset,
       cursor: cursor ?? null,
       query: query ?? null,
+      dubPointId: dubPointId ?? null,
+      teamId: teamId ?? null,
       startTimeFrom: fromMs === undefined ? null : new Date(fromMs).toISOString(),
       startTimeToExclusive: toExclusiveMs === undefined ? null : new Date(toExclusiveMs).toISOString(),
     },
