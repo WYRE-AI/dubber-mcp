@@ -44,6 +44,22 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Same check as wyre-technology/.github mcp-server-ci.yml: assigning
+      # request credentials to process.env leaks them across concurrent
+      # tenants in gateway mode. Tests are excluded; append "cred-lint-allow"
+      # to a line for a vetted exception.
+      - name: Guard against per-request process.env credential mutation
+        shell: bash
+        run: |
+          matches=$(grep -rnE 'process\.env(\.[A-Za-z_][A-Za-z0-9_]*|\[[^]]+\]) *=[^=]' src \
+            --include='*.ts' --include='*.mts' 2>/dev/null \
+            | grep -vE '\.test\.|\.spec\.|/__tests__/|/tests?/|cred-lint-allow' || true)
+          if [ -n "$matches" ]; then
+            echo "::error::Assignment to process.env found in src/. Use request-scoped credentials instead."
+            echo "$matches"
+            exit 1
+          fi
+
       - name: Build
         run: npm run build
 
