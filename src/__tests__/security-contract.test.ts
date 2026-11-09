@@ -14,6 +14,7 @@ import http from "node:http";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMcpHandler, type McpHttpHandler } from "@modelcontextprotocol/server";
 import { toNodeHandler } from "@modelcontextprotocol/node";
+import { MAX_RESPONSE_CHARS } from "../config.js";
 import { buildUrl, clearTokenCache, createDubberApi } from "../dubber-api.js";
 import type { DubberCredentials } from "../credentials.js";
 import { handleToolCall } from "../handlers/index.js";
@@ -373,7 +374,7 @@ describe("list tools page explicitly and say when more exist", () => {
     const result = await handleToolCall(createDubberApi(CREDS), "dubber_groups_list_unidentified_dub_points", {
       groupId: "g-1",
     });
-    expect(JSON.parse(text(result))).toEqual([{ id: "udp-1" }]);
+    expect(JSON.parse(text(result))).toEqual({ unidentified_dub_points: [{ id: "udp-1" }], returned: 1 });
   });
 
   it("dubber_users_list sends count and page and flags a full page as hasMore", async () => {
@@ -417,6 +418,57 @@ describe("list tools page explicitly and say when more exist", () => {
     const result = await handleToolCall(createDubberApi(CREDS), name, { accountId: "a-1", ...extra });
     expect(text(result)).toContain(message);
     expect(sent).toEqual([]);
+  });
+});
+
+describe(`tool output is capped at ${MAX_RESPONSE_CHARS} characters without losing the paging fields`, () => {
+  const PAD = "x".repeat(1_000);
+
+  it("dubber_recordings_list drops recordings from the end and points nextCursor at the last one kept", async () => {
+    let served = 0;
+    respond = () => json(Array.from({ length: 100 }, () => ({ id: `r-${served++}`, notes: PAD })));
+    const out = text(await handleToolCall(createDubberApi(CREDS), "dubber_recordings_list", { accountId: "a-1", limit: 500 }));
+    expect(out.length).toBeLessThanOrEqual(MAX_RESPONSE_CHARS);
+    const body = JSON.parse(out);
+    const kept = body.recordings.length;
+    expect(kept).toBeGreaterThan(0);
+    expect(kept).toBeLessThan(500);
+    expect(body).toMatchObject({ returned: kept, hasMore: true, nextCursor: `r-${kept - 1}`, remainingOffset: 0 });
+    expect(body.note).toContain(`cursor="r-${kept - 1}"`);
+    expect(body.filters).toMatchObject({ limit: 500 });
+  });
+
+  it.each([
+    ["dubber_users_list", "users", { users: Array.from({ length: 100 }, (_, i) => ({ id: `u-${i}`, notes: PAD })) }],
+    ["dubber_dub_points_list", "dub_points", { dub_points: Array.from({ length: 100 }, (_, i) => ({ id: `d-${i}`, notes: PAD })) }],
+  ])("%s keeps count/page and says to ask for a smaller count", async (name, key, payload) => {
+    respond = () => json(payload);
+    const out = text(await handleToolCall(createDubberApi(CREDS), name, { accountId: "a-1", count: 100, page: 3 }));
+    expect(out.length).toBeLessThanOrEqual(MAX_RESPONSE_CHARS);
+    const body = JSON.parse(out);
+    expect(body[key].length).toBeLessThan(100);
+    expect(body).toMatchObject({ returned: body[key].length, count: 100, page: 3, hasMore: true });
+    expect(body.note).toContain("smaller count");
+  });
+
+  it.each([
+    ["dubber_dub_points_find", "dub_points", { query: { external_identifier: "u@x" } }],
+    ["dubber_groups_list_unidentified_dub_points", "unidentified_dub_points", { groupId: "g-1" }],
+    ["dubber_notifications_list", "notifications", { accountId: "a-1" }],
+  ])("%s drops items from the end and says so", async (name, key, args) => {
+    respond = () => json(Array.from({ length: 200 }, (_, i) => ({ id: `n-${i}`, notes: PAD })));
+    const out = text(await handleToolCall(createDubberApi(CREDS), name, args));
+    expect(out.length).toBeLessThanOrEqual(MAX_RESPONSE_CHARS);
+    const body = JSON.parse(out);
+    expect(body[key].length).toBeLessThan(200);
+    expect(body.returned).toBe(body[key].length);
+    expect(body.note).toContain(`of 200`);
+  });
+
+  it("leaves a result that fits untouched", async () => {
+    respond = () => json({ users: [{ id: "u-1" }] });
+    const body = JSON.parse(text(await handleToolCall(createDubberApi(CREDS), "dubber_users_list", { accountId: "a-1" })));
+    expect(body).toEqual({ users: [{ id: "u-1" }], returned: 1, count: 100, page: null, hasMore: false });
   });
 });
 
@@ -543,6 +595,16 @@ describe("one mocked end-to-end read over the real MCP serving stack", () => {
     for (const secret of [SIGNED_URL, "test-signature-not-real", ACCESS_TOKEN, CREDS.clientSecret, CREDS.authToken]) {
       expect(logs).not.toContain(secret);
     }
+  });
+
+  it("redacts, then truncates a single oversized result, so no partial secret survives the cut", async () => {
+    // The client secret straddles the cut point: redacted first, it cannot leave a prefix behind.
+    const pad = "y".repeat(MAX_RESPONSE_CHARS - 40);
+    respond = () => json({ id: "u-1", notes: `${pad}${CREDS.clientSecret}${"z".repeat(5_000)}` });
+    const { text: out } = await callTool("dubber_users_get", { userId: "u-1" });
+    expect(out.length).toBeLessThan(MAX_RESPONSE_CHARS + 300);
+    expect(out).toContain("[truncated:");
+    expect(out).not.toContain(CREDS.clientSecret.slice(0, 8));
   });
 
   it("redacts a credential that a vendor error echoes back, in the tool output and the logs", async () => {

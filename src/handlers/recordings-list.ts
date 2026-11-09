@@ -16,11 +16,12 @@
 import type { Recording } from "@wyre-ai/node-dubber";
 import { rateLimitOf, type DubberApi } from "../dubber-api.js";
 import {
-  jsonResult,
+  listResult,
   optionalInteger,
   optionalString,
   requireId,
   ToolInputError,
+  trimNote,
   type ToolResult,
 } from "./results.js";
 
@@ -265,9 +266,7 @@ export async function listRecordings(client: DubberApi, args: Record<string, unk
     note = note ? `${note} ${extra}` : extra;
   }
 
-  return jsonResult({
-    recordings,
-    returned: recordings.length,
+  const fields = {
     hasMore,
     nextCursor,
     remainingOffset: toSkip,
@@ -286,5 +285,15 @@ export async function listRecordings(client: DubberApi, args: Record<string, unk
       startTimeToExclusive: toExclusiveMs === undefined ? null : new Date(toExclusiveMs).toISOString(),
     },
     ...(note ? { note } : {}),
+  };
+  // Too long for one result: keep the newest recordings and resume after the last one kept.
+  return listResult(fields, "recordings", recordings, (kept, total) => {
+    const cursor = (kept[kept.length - 1] as Recording).id;
+    return {
+      hasMore: true,
+      nextCursor: cursor,
+      remainingOffset: 0,
+      note: trimNote(kept.length, total, `Call again with cursor="${cursor}" and offset=0 (same filters) to continue.`),
+    };
   });
 }

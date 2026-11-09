@@ -74,6 +74,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   401 for "no access to this resource", and re-minting spent its ~500 mints/day budget.
 - The 401 hint says the cause can be wrong credentials or a token without access to the
   resource (such as unidentified dub points, which need a group-level token).
+- Tool output is capped at 60,000 characters, after redaction. List results drop items from
+  the end and keep their paging fields (`dubber_recordings_list` resumes from a `nextCursor` at
+  the last recording kept); anything else is cut with a `[truncated: ...]` marker.
+- **Breaking:** `dubber_dub_points_find`, `dubber_groups_list_unidentified_dub_points` and
+  `dubber_notifications_list` return `{ returned, <list> }` instead of a bare array, so a
+  trimmed result can say so.
 - `dubber_test_connection` makes one authenticated `GET /profile` instead of only checking for
   a token, so a cached token for revoked credentials no longer reports success.
 

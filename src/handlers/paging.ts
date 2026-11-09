@@ -3,7 +3,7 @@
  * (default 20, max 100) and `page`. Dubber silently stops at `count`, so the
  * result always says whether a full page came back (more may exist).
  */
-import { optionalIntegerInRange, type ToolResult, jsonResult } from "./results.js";
+import { listResult, optionalIntegerInRange, trimNote, type ToolResult } from "./results.js";
 
 export const MAX_PAGE_COUNT = 100;
 
@@ -18,7 +18,7 @@ export function pageArgs(args: Record<string, unknown>): PageArgs {
   return page === undefined ? { count } : { count, page };
 }
 
-/** `{ <key>: items, returned, count, page, hasMore, note? }` */
+/** `{ returned, count, page, hasMore, note?, <key>: items }` */
 export function pageResult(key: string, items: unknown[], { count, page }: PageArgs, emptyNote: string): ToolResult {
   const hasMore = items.length >= count;
   const note = hasMore
@@ -27,12 +27,15 @@ export function pageResult(key: string, items: unknown[], { count, page }: PageA
     : items.length === 0
       ? emptyNote
       : undefined;
-  return jsonResult({
-    [key]: items,
-    returned: items.length,
-    count,
-    page: page ?? null,
-    hasMore,
-    ...(note ? { note } : {}),
-  });
+  return listResult({ count, page: page ?? null, hasMore, ...(note ? { note } : {}) }, key, items, (kept, total) => ({
+    hasMore: true,
+    note: trimNote(kept.length, total, `Call again with a smaller count (e.g. count=${kept.length}) to page through the rest.`),
+  }));
+}
+
+/** An unpaged Dubber list: `{ returned, note?, <key>: items }`, trimmed from the end if too long. */
+export function unpagedListResult(key: string, items: unknown[], emptyNote: string, narrow: string): ToolResult {
+  return listResult(items.length === 0 ? { note: emptyNote } : {}, key, items, (kept, total) => ({
+    note: trimNote(kept.length, total, narrow),
+  }));
 }

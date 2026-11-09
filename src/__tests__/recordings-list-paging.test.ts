@@ -254,12 +254,20 @@ describe("dubber_recordings_list paging (real guarded client, mocked fetch)", ()
     expect(r.hasMore).toBe(true);
     expect(r.nextCursor).toBe(inWindow[249]!.id);
 
-    const full = await list(realClient(), { startTimeFrom: WEEK_FROM, startTimeTo: WEEK_TO, limit: 500 });
-    expect(ids(full)).toEqual(inWindow.map((x) => x.id));
-    expect(full.hasMore).toBe(false);
-    expect(full.nextCursor).toBeNull();
+    // All 480 do not fit the response cap: the result is trimmed and the cursor resumes exactly.
+    const window = { startTimeFrom: WEEK_FROM, startTimeTo: WEEK_TO, limit: 500 };
+    let page = await list(realClient(), window);
     // Stops once an entire page is older than the window instead of scanning all 1,000.
-    expect(full.requests).toBeLessThan(10);
+    expect(page.requests).toBeLessThan(10);
+    expect(ids(page).length).toBeLessThan(480);
+    const seen = ids(page);
+    for (let guard = 0; page.hasMore && guard < 5; guard++) {
+      page = await list(realClient(), { ...window, cursor: page.nextCursor, offset: page.remainingOffset });
+      seen.push(...ids(page));
+    }
+    expect(seen).toEqual(inWindow.map((x) => x.id));
+    expect(page.hasMore).toBe(false);
+    expect(page.nextCursor).toBeNull();
   });
 
   it("a date-only startTimeTo includes that whole (UTC) day; date-time is exclusive", async () => {

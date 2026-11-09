@@ -62,6 +62,20 @@ export function redactText(text: string, knownSecrets: readonly (string | undefi
   return out;
 }
 
+/**
+ * Cuts text to maxChars. Call it only on text that is already redacted, so a secret straddling
+ * the cut can never survive as a partial prefix. List results are trimmed by item before this
+ * (handlers/results.ts listResult), so this only fires for one oversized item.
+ */
+export function truncate(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const omitted = text.length - maxChars;
+  return (
+    `${text.slice(0, maxChars)}\n\n[truncated: ${omitted} more characters omitted. ` +
+    "Narrow the request (a smaller limit or count, a shorter time range, or a single id).]"
+  );
+}
+
 /** Query parameters that make a pre-signed URL usable by whoever holds it. */
 const SIGNED_URL_PARAM = /([?&](?:X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token|Signature|AWSAccessKeyId|Key-Pair-Id|Policy)=)[^&\s"'\\]+/gi;
 

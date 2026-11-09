@@ -1,4 +1,5 @@
 /** Shared tool-result helpers, the handler signature, and argument validation. */
+import { MAX_RESPONSE_CHARS } from "../config.js";
 import type { DubberApi } from "../dubber-api.js";
 import { redactValue } from "../redact.js";
 
@@ -19,9 +20,49 @@ export interface ToolResult {
  */
 export type ToolHandler = (client: DubberApi, args: Record<string, unknown>) => Promise<ToolResult>;
 
-/** JSON tool output. Values under credential-named keys are redacted; mcp-server.ts redacts the credentials in use. */
+/**
+ * JSON tool output. Values under credential-named keys are redacted; mcp-server.ts then redacts
+ * the credentials in use and truncates anything still over MAX_RESPONSE_CHARS.
+ */
 export function jsonResult(value: unknown): ToolResult {
   return { content: [{ type: "text", text: JSON.stringify(redactValue(value), null, 2) }] };
+}
+
+/** The note a trimmed list carries; `next` says how to get the rest. */
+export function trimNote(kept: number, total: number, next: string): string {
+  return `Only the first ${kept} of ${total} items fit the ${MAX_RESPONSE_CHARS}-character response limit. ${next}`;
+}
+
+/**
+ * JSON output for a result that carries a list under `key`: `{ returned, ...fields, [key]: items }`.
+ * Over MAX_RESPONSE_CHARS, items are dropped from the END of the list until it fits (the JSON is
+ * never cut, so the paging fields survive), and `onTrim(kept, total)` supplies the fields that
+ * change (hasMore, a cursor, a note). One item is always kept; a lone oversized item is truncated
+ * as text by mcp-server.ts, after redaction, with the paging fields ahead of it.
+ */
+export function listResult(
+  fields: Record<string, unknown>,
+  key: string,
+  items: unknown[],
+  onTrim: (kept: unknown[], total: number) => Record<string, unknown>
+): ToolResult {
+  const render = (kept: unknown[], changed: Record<string, unknown> = {}): string =>
+    JSON.stringify(redactValue({ returned: kept.length, ...fields, ...changed, [key]: kept }), null, 2);
+  const full = render(items);
+  if (full.length <= MAX_RESPONSE_CHARS || items.length <= 1) return textResult(full);
+  const trimmed = (count: number) => {
+    const kept = items.slice(0, count);
+    return render(kept, onTrim(kept, items.length));
+  };
+  // The longest prefix that fits; each try serializes the result once.
+  let lo = 1;
+  let hi = items.length - 1;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (trimmed(mid).length <= MAX_RESPONSE_CHARS) lo = mid;
+    else hi = mid - 1;
+  }
+  return textResult(trimmed(lo));
 }
 
 export function textResult(text: string): ToolResult {

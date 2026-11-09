@@ -110,5 +110,8 @@ export function isDubberRegion(value: string): value is DubberRegion {
 /** Upper bound on any upstream response body, enforced while streaming. */
 export const MAX_UPSTREAM_BYTES = 4 * 1024 * 1024;
 
+/** Upper bound on one tool result's text, applied after redaction (fleet default, as anthropic-admin-mcp). */
+export const MAX_RESPONSE_CHARS = 60_000;
+
 /** Per-request upstream timeout. */
 export const REQUEST_TIMEOUT_MS = 30_000;

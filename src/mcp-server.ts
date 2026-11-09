@@ -14,12 +14,12 @@
  */
 import { Server } from "@modelcontextprotocol/server";
 import type { McpServerFactory } from "@modelcontextprotocol/server";
-import { configuredTiers, isGatewayMode, type ToolTier } from "./config.js";
+import { configuredTiers, isGatewayMode, MAX_RESPONSE_CHARS, type ToolTier } from "./config.js";
 import { resolveEnvCredentials, type DubberCredentials } from "./credentials.js";
 import { createDubberApi, secretsInUse, type DubberApi } from "./dubber-api.js";
 import { handleToolCall } from "./handlers/index.js";
 import { errorResult, type ToolResult } from "./handlers/results.js";
-import { redactText } from "./redact.js";
+import { redactText, truncate } from "./redact.js";
 import { currentRequestScope } from "./request-scope.js";
 import { toolsForTiers } from "./tools/index.js";
 import { logger } from "./utils/logger.js";
@@ -55,10 +55,13 @@ export function makeMcpServerFactory(): McpServerFactory {
   };
 }
 
+/** Redacts, then truncates: the order keeps a partial secret from surviving the cut. */
 function redactResult(result: ToolResult, secrets: string[]): ToolResult {
   return {
     ...result,
-    content: result.content.map((c) => (c.type === "text" ? { ...c, text: redactText(c.text, secrets) } : c)),
+    content: result.content.map((c) =>
+      c.type === "text" ? { ...c, text: truncate(redactText(c.text, secrets), MAX_RESPONSE_CHARS) } : c
+    ),
   };
 }
 

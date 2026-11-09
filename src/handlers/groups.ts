@@ -1,5 +1,6 @@
 import { unwrapList } from "@wyre-ai/node-dubber";
 import type { DubberApi } from "../dubber-api.js";
+import { unpagedListResult } from "./paging.js";
 import { jsonResult, requireId, type ToolHandler, type ToolResult } from "./results.js";
 
 async function get(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
@@ -11,8 +12,12 @@ async function listUnidentifiedDubPoints(client: DubberApi, args: Record<string,
   const groupId = requireId(args, "groupId");
   const body = await client.request<unknown>(`/groups/${encodeURIComponent(groupId)}/unidentified_dub_points`);
   const dubPoints = unwrapList(body, "unidentified_dub_points", "data");
-  if (dubPoints.length === 0) return jsonResult({ unidentified_dub_points: [], note: "No unidentified dub points." });
-  return jsonResult(dubPoints);
+  return unpagedListResult(
+    "unidentified_dub_points",
+    dubPoints,
+    "No unidentified dub points.",
+    "Dubber does not page this endpoint, so the rest cannot be fetched here."
+  );
 }
 
 export const GROUPS_HANDLERS: Record<string, ToolHandler> = {

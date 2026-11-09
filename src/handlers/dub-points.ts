@@ -1,6 +1,6 @@
 import type { DubberApi } from "../dubber-api.js";
 import { DUB_POINT_FIND_KEYS } from "../tools/dub-points.js";
-import { pageArgs, pageResult } from "./paging.js";
+import { pageArgs, pageResult, unpagedListResult } from "./paging.js";
 import { jsonResult, requireId, requireObject, ToolInputError, type ToolHandler, type ToolResult } from "./results.js";
 
 async function list(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
@@ -33,8 +33,7 @@ async function find(client: DubberApi, args: Record<string, unknown>): Promise<T
     throw new ToolInputError(`Argument "query" needs at least one of ${FIND_KEYS.join(", ")}.`);
   }
   const dubPoints = await client.dubPoints.find(params);
-  if (dubPoints.length === 0) return jsonResult({ dub_points: [], note: "No matching Dub.Point found." });
-  return jsonResult(dubPoints);
+  return unpagedListResult("dub_points", dubPoints, "No matching Dub.Point found.", "Add lookup keys to narrow the query.");
 }
 
 export const DUB_POINTS_HANDLERS: Record<string, ToolHandler> = {

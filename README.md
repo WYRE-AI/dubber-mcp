@@ -210,6 +210,11 @@ The fleet template contract, as implemented here:
 - **No redirects.** `redirect: "manual"`; any 3xx is an error, including on the token mint
   that carries the client secret.
 - **Bounded reads.** Response bodies are capped at 4 MiB while streaming.
+- **Bounded output.** A tool result is at most 60,000 characters. List results drop items from
+  the end until they fit and keep their paging fields: `dubber_recordings_list` sets
+  `hasMore: true` and points `nextCursor` at the last recording kept (`remainingOffset: 0`);
+  paged lists say to ask for a smaller `count`. Any other result is cut after redaction, with a
+  `[truncated: ...]` marker.
 - **Errors** keep the HTTP status, Dubber's message (capped), and the vendor request id when
   one is sent. Dubber rate-limits with `403` (error codes 1021/1024: retry in a few seconds;
   1022: the account's daily quota is used up), which is reported as a rate limit, not as missing

@@ -1,5 +1,6 @@
 /** Tools: read call recordings: list, details, the signed audio link, waveform. */
 import type { Tool } from "@modelcontextprotocol/server";
+import { MAX_RESPONSE_CHARS } from "../config.js";
 import { MAX_LIMIT, MAX_REQUESTS_PER_CALL, DUBBER_PAGE_SIZE } from "../handlers/recordings-list.js";
 
 const MAX_SCANNED = MAX_REQUESTS_PER_CALL * DUBBER_PAGE_SIZE;
@@ -12,6 +13,8 @@ export const RECORDINGS_TOOLS: Tool[] = [
       "matching recordings to return; `offset` skips that many matching recordings from the newest. " +
       "If the result has hasMore=true, call again with cursor=<nextCursor> and offset=<remainingOffset> (same filters; " +
       "remainingOffset is 0 unless the call stopped while still skipping) to continue with no gaps or duplicates. " +
+      `A result is at most ${MAX_RESPONSE_CHARS.toLocaleString("en-US")} characters: a longer one returns fewer than limit ` +
+      "recordings with hasMore=true and a nextCursor after the last one returned. " +
       "Dubber has NO date filter: startTimeFrom/startTimeTo are " +
       `applied by this server after fetching pages (each tool call scans at most ${MAX_SCANNED.toLocaleString("en-US")} ` +
       `recordings / ${MAX_REQUESTS_PER_CALL} Dubber requests; scanCapReached=true means continue with nextCursor; ` +
