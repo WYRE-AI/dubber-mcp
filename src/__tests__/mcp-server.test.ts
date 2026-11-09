@@ -39,6 +39,12 @@ describe("buildCredentials", () => {
     }
   });
 
+  it("rejects a present but blank region instead of defaulting to sandbox", () => {
+    const { creds, error } = buildCredentials("id", "s", "a", "t", "   ");
+    expect(creds).toBeUndefined();
+    expect(error).toContain("Invalid Dubber region");
+  });
+
   it("names every missing required header", () => {
     const { creds, error } = buildCredentials(undefined, undefined, undefined, undefined);
     expect(creds).toBeUndefined();
@@ -90,6 +96,17 @@ describe("resolveEnvCredentials", () => {
       DUBBER_BASE_URL: "https://dubber.test.invalid",
     });
     expect(creds).toEqual({ clientId: "id", clientSecret: "secret", authId: "auth-id", authToken: "auth-token", region: "sandbox" });
+  });
+
+  it("treats an empty DUBBER_REGION (as in a copied .env) as unset", () => {
+    const { creds } = resolveEnvCredentials({
+      DUBBER_CLIENT_ID: "id",
+      DUBBER_CLIENT_SECRET: "secret",
+      DUBBER_AUTH_ID: "auth-id",
+      DUBBER_AUTH_TOKEN: "auth-token",
+      DUBBER_REGION: " ",
+    });
+    expect(creds?.region).toBe("sandbox");
   });
 });
 

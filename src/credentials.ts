@@ -51,7 +51,8 @@ export function buildCredentials(
         "(or DUBBER_CLIENT_ID / DUBBER_CLIENT_SECRET / DUBBER_AUTH_ID / DUBBER_AUTH_TOKEN in env mode)",
     };
   }
-  const normalizedRegion = (region ?? "").trim().toLowerCase() || DEFAULT_REGION;
+  // Absent means the default; present but blank (or a repeated header) is an error, never a silent default.
+  const normalizedRegion = region === undefined ? DEFAULT_REGION : region.trim().toLowerCase();
   if (!isDubberRegion(normalizedRegion)) {
     return { error: `Invalid Dubber region (X-Dubber-Region / DUBBER_REGION). Allowed: ${DUBBER_REGIONS.join(", ")}.` };
   }
@@ -88,11 +89,11 @@ export function resolveEnvCredentials(
     env.DUBBER_CLIENT_SECRET?.trim(),
     env.DUBBER_AUTH_ID?.trim(),
     env.DUBBER_AUTH_TOKEN?.trim(),
-    env.DUBBER_REGION
+    env.DUBBER_REGION?.trim() || undefined
   );
 }
 
-/** Values that must never appear in tool output or logs. */
+/** Credential values that must never appear in tool output or logs (dubber-api's secretsInUse adds the access token). */
 export function secretsOf(creds: DubberCredentials | undefined): string[] {
   return creds ? [creds.clientId, creds.clientSecret, creds.authToken] : [];
 }

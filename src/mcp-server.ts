@@ -15,8 +15,8 @@
 import { Server } from "@modelcontextprotocol/server";
 import type { McpServerFactory } from "@modelcontextprotocol/server";
 import { configuredTiers, isGatewayMode, type ToolTier } from "./config.js";
-import { resolveEnvCredentials, secretsOf, type DubberCredentials } from "./credentials.js";
-import { createDubberApi, type DubberApi } from "./dubber-api.js";
+import { resolveEnvCredentials, type DubberCredentials } from "./credentials.js";
+import { createDubberApi, secretsInUse, type DubberApi } from "./dubber-api.js";
 import { handleToolCall } from "./handlers/index.js";
 import { errorResult, type ToolResult } from "./handlers/results.js";
 import { redactText } from "./redact.js";
@@ -79,7 +79,7 @@ export function createMcpServer(
 
   server.setRequestHandler("tools/list", async () => ({ tools }));
 
-  server.setRequestHandler("tools/call", async (request, ctx) => {
+  server.setRequestHandler("tools/call", async (request) => {
     const { name, arguments: args } = request.params;
     // Tool name only — never arguments or results (recordings carry PII and signed links).
     logger.debug("Tool call received", { tool: name });
@@ -94,11 +94,9 @@ export function createMcpServer(
     }
     client ??= createDubberApi(credentials);
 
-    const result = await handleToolCall(client, name, (args ?? {}) as Record<string, unknown>, {
-      clientCapabilities: server.getClientCapabilities(),
-      inputResponses: ctx.mcpReq.inputResponses,
-    });
-    return "content" in result ? redactResult(result as ToolResult, secretsOf(credentials)) : result;
+    const result = await handleToolCall(client, name, (args ?? {}) as Record<string, unknown>);
+    // The credentials and the access token minted for them (a vendor error may echo either).
+    return redactResult(result, secretsInUse(credentials));
   });
 
   return server;

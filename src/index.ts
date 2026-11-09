@@ -15,11 +15,10 @@
  * - DUBBER_CLIENT_ID / DUBBER_CLIENT_SECRET (required; Mashery app key/secret)
  * - DUBBER_AUTH_ID / DUBBER_AUTH_TOKEN (required; Dubber portal API tab)
  * - DUBBER_REGION (optional; default "sandbox")
- * - DUBBER_BASE_URL (optional; env mode only, overrides region)
  * Or via gateway headers (AUTH_MODE=gateway):
  * - X-Dubber-Client-Id / X-Dubber-Client-Secret (required)
  * - X-Dubber-Auth-Id / X-Dubber-Auth-Token (required)
- * - X-Dubber-Region (optional; default "sandbox")
+ * - X-Dubber-Region (optional; default "sandbox" only when absent; blank or repeated is a 401)
  *
  * HTTP transport refuses to start unless CONDUIT_S2S_SECRET is set to a
  * value that is not a known placeholder. MCP_ALLOW_INSECURE_DEV=1 is a
@@ -77,7 +76,8 @@ export const MIN_S2S_SECRET_LENGTH = 32;
 /** Placeholder, too short, or a short repeated pattern. Null when the secret is usable. */
 export function s2sSecretProblem(secret: string): string | null {
   if (KNOWN_PLACEHOLDER_SECRETS.has(secret.toLowerCase())) return "is a known placeholder";
-  if (/replace|changeme|change-me|placeholder|example|your-?secret/i.test(secret)) return "looks like a placeholder";
+  // ^s2s-test: the prefix this repo's tests once committed as a fixture (now generated per run).
+  if (/replace|changeme|change-me|placeholder|example|your-?secret|^s2s-test/i.test(secret)) return "looks like a placeholder";
   if (secret.length < MIN_S2S_SECRET_LENGTH) return `is shorter than ${MIN_S2S_SECRET_LENGTH} characters`;
   if (/^(.{1,8}?)\1+$/.test(secret)) return "is a repeated character pattern";
   if (new Set(secret).size < 8) return "has too few distinct characters";
@@ -119,18 +119,36 @@ function headerValue(value: string | string[] | undefined): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-/**
- * Read a gateway credential header that must appear exactly once. Node joins
- * repeated headers with ", " in req.headers, which would turn two credentials
- * into one comma-joined value, so count occurrences in rawHeaders first.
- */
-function singleGatewayHeader(req: IncomingMessage, lowerName: string): string | undefined {
+function headerOccurrences(req: IncomingMessage, lowerName: string): number {
   let occurrences = 0;
   for (let index = 0; index < req.rawHeaders.length; index += 2) {
     if (req.rawHeaders[index]?.toLowerCase() === lowerName) occurrences += 1;
   }
-  if (occurrences !== 1) return undefined;
+  return occurrences;
+}
+
+/**
+ * Read a gateway credential header that must appear exactly once. Node joins
+ * repeated headers with ", " in req.headers, which would turn two credentials
+ * into one comma-joined value, so count occurrences in rawHeaders first.
+ * A required header that is repeated or blank reads as missing.
+ */
+function singleGatewayHeader(req: IncomingMessage, lowerName: string): string | undefined {
+  if (headerOccurrences(req, lowerName) !== 1) return undefined;
   return headerValue(req.headers[lowerName]);
+}
+
+/**
+ * The optional X-Dubber-Region header. Only an absent header may fall back to
+ * the default region; a repeated or blank one is returned as "" so credential
+ * validation rejects it instead of silently using sandbox.
+ */
+function regionHeader(req: IncomingMessage): string | undefined {
+  const occurrences = headerOccurrences(req, "x-dubber-region");
+  if (occurrences === 0) return undefined;
+  if (occurrences > 1) return "";
+  const value = req.headers["x-dubber-region"];
+  return typeof value === "string" ? value : "";
 }
 
 /** 127.0.0.1, the rest of 127.0.0.0/8, localhost, and ::1. */
@@ -288,7 +306,9 @@ export async function startHttpTransport(): Promise<HttpServer> {
       // Blank or repeated headers count as missing.
       let credentials: DubberCredentials | undefined;
       if (isGatewayMode) {
-        const resolved = resolveGatewayCredentials((name) => singleGatewayHeader(req, name.toLowerCase()));
+        const resolved = resolveGatewayCredentials((name) =>
+          name === "x-dubber-region" ? regionHeader(req) : singleGatewayHeader(req, name)
+        );
         const error = resolved.error;
         credentials = resolved.creds;
         if (error) {

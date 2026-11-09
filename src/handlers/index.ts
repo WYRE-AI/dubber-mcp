@@ -7,10 +7,8 @@
  * tool in TOOLS without a handler, throws at module load so a wiring mistake
  * fails every test instead of surfacing as "Unknown tool" in production.
  */
-import type { InputRequiredResult } from "@modelcontextprotocol/server";
 import { AuthenticationError, DubberError, ForbiddenError, RateLimitError } from "@wyre-ai/node-dubber";
-import type { DubberApi, DubberApiError } from "../dubber-api.js";
-import { NO_ELICITATION, type ElicitationContext } from "../elicitation.js";
+import { rateLimitOf, type DubberApi, type DubberApiError } from "../dubber-api.js";
 import { logger } from "../utils/logger.js";
 import { TOOLS } from "../tools/index.js";
 import { ACCOUNTS_HANDLERS } from "./accounts.js";
@@ -18,7 +16,6 @@ import { CORE_HANDLERS } from "./core.js";
 import { DUB_POINTS_HANDLERS } from "./dub-points.js";
 import { GROUPS_HANDLERS } from "./groups.js";
 import { NOTIFICATIONS_HANDLERS } from "./notifications.js";
-import { OAUTH_HANDLERS } from "./oauth.js";
 import { PROFILE_HANDLERS } from "./profile.js";
 import { RECORDINGS_HANDLERS } from "./recordings.js";
 import { errorResult, ToolInputError, type ToolHandler, type ToolResult } from "./results.js";
@@ -44,7 +41,6 @@ const HANDLERS = mergeHandlers([
   PROFILE_HANDLERS,
   NOTIFICATIONS_HANDLERS,
   DUB_POINTS_HANDLERS,
-  OAUTH_HANDLERS,
 ]);
 
 for (const tool of TOOLS) {
@@ -61,12 +57,19 @@ const MAX_VENDOR_MESSAGE = 1000;
  */
 export function describeDubberError(error: DubberApiError): string {
   let text = `Dubber error (HTTP ${error.statusCode}): ${error.message.slice(0, MAX_VENDOR_MESSAGE)}`;
-  if (error instanceof RateLimitError) text += ` Rate limited; retry after ${error.retryAfter}s.`;
+  const rateLimit = rateLimitOf(error);
+  const code = rateLimit?.code === undefined ? "" : ` (code ${rateLimit.code})`;
+  if (error instanceof RateLimitError) {
+    text += ` Rate limited; retry after ${error.retryAfter}s.`;
+  } else if (rateLimit?.kind === "daily") {
+    text += ` Dubber daily rate limit${code}: this account's quota for today is used up; retrying now will not help.`;
+  } else if (rateLimit) {
+    text += ` Dubber rate limit${code}: too many requests; retry in a few seconds.`;
+  } else if (error instanceof ForbiddenError) {
+    text += " The credentials may lack access to this account/group.";
+  }
   if (error instanceof AuthenticationError) {
     text += " Check the Dubber Client ID/Secret and Auth ID/Token.";
-  }
-  if (error instanceof ForbiddenError) {
-    text += " The credentials may lack access to this account/group.";
   }
   if (error.requestId) text += ` (request id: ${error.requestId})`;
   return text;
@@ -75,14 +78,13 @@ export function describeDubberError(error: DubberApiError): string {
 export async function handleToolCall(
   client: DubberApi,
   name: string,
-  args: Record<string, unknown>,
-  elicitation: ElicitationContext = NO_ELICITATION
-): Promise<ToolResult | InputRequiredResult> {
+  args: Record<string, unknown>
+): Promise<ToolResult> {
   if (!Object.hasOwn(HANDLERS, name)) {
     return errorResult(`Unknown tool: ${name}`);
   }
   try {
-    return await HANDLERS[name](client, args, elicitation);
+    return await HANDLERS[name](client, args);
   } catch (error) {
     // Tool name, status and request id only — never arguments or bodies.
     logger.warn("Tool call failed", {

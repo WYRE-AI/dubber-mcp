@@ -8,7 +8,7 @@
  * AUTH_MODE=gateway rejects requests that omit vendor credential headers
  * and must not fall back to DUBBER_* in process.env.
  */
-import { createHmac } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import type { Server } from "node:http";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -22,7 +22,7 @@ vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit)
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
   if (url.startsWith("http://127.0.0.1")) return realFetch(input, init);
   outbound.push({ url, body: typeof init?.body === "string" ? init.body : "" });
-  return new Response(JSON.stringify({ access_token: "tok-from-mock", expires_in: 86400 }), {
+  return new Response(JSON.stringify({ access_token: "tok-from-mock", expires_in: 240 }), {
     status: 200,
     headers: { "content-type": "application/json" },
   });
@@ -32,7 +32,8 @@ const { startHttpTransport } = await import("../index.js");
 const { clearTokenCache } = await import("../dubber-api.js");
 const { resetGatewayLock } = await import("../config.js");
 
-const S2S_SECRET = "s2s-test-7Hq2Lw9Zr4Kx8Mv3Nb6Pc1Td5Fg0Yj";
+// Generated per run: a committed fixture would be a publicly known secret that passes the checks.
+const S2S_SECRET = randomBytes(32).toString("hex");
 const ENV_CLIENT_ID = "env-client-id-must-not-be-used";
 const ENV_CLIENT_SECRET = "env-client-secret-must-not-be-used";
 const ENV_AUTH_ID = "env-auth-id-must-not-be-used";
@@ -485,6 +486,39 @@ describe("HTTP /mcp authentication", () => {
     expect(outbound).toEqual([]);
   });
 
+  it.each([
+    ["repeated", ["us", "au"]],
+    ["blank", "   "],
+  ])("rejects an X-Dubber-Region header that is %s instead of defaulting to sandbox", async (_label, region) => {
+    const server = await listen();
+    const { request } = await import("node:http");
+    const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = request(
+        {
+          hostname: "127.0.0.1",
+          port: server.port,
+          path: "/mcp",
+          method: "POST",
+          headers: {
+            ...mcpHeaders({ "x-gateway-s2s": mintS2sHeader(S2S_SECRET) }),
+            ...gatewayHeaders,
+            "x-dubber-region": region,
+          },
+        },
+        (res) => {
+          let body = "";
+          res.on("data", (chunk) => (body += String(chunk)));
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+        },
+      );
+      req.on("error", reject);
+      req.end(statusCall);
+    });
+    expect(result.status).toBe(401);
+    expect(result.body).toContain("Invalid Dubber region");
+    expect(outbound).toEqual([]);
+  });
+
   it("accepts a valid S2S header plus credential headers and uses those credentials", async () => {
     const logs = captureStderr();
     try {
@@ -601,6 +635,7 @@ describe("HTTP startup: fail closed on weak or inconsistent configuration", () =
     ["shorter than 32 characters", "Zq8Lw2Kx9Mv3Nb6Pc1"],
     ["a repeated character pattern", "abcdabcdabcdabcdabcdabcdabcdabcdabcd"],
     ["too few distinct characters", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"],
+    ["looks like a placeholder", "s2s-test-7Hq2Lw9Zr4Kx8Mv3Nb6Pc1Td5Fg0Yj"],
   ])("refuses a CONDUIT_S2S_SECRET that is %s, without logging it", async (problem, secret) => {
     process.env.CONDUIT_S2S_SECRET = secret;
     const text = await refused();
@@ -618,6 +653,13 @@ describe("HTTP startup: fail closed on weak or inconsistent configuration", () =
     process.env.CONDUIT_S2S_SECRET = S2S_SECRET;
     process.env.AUTH_MODE = "env";
     expect(await refused()).toContain("AUTH_MODE=env requires DUBBER_* credentials");
+  });
+
+  it.each(["write", "read,write,admin"])("refuses DUBBER_TOOL_TIERS=%s: this server is read-only", async (tiers) => {
+    process.env.CONDUIT_S2S_SECRET = S2S_SECRET;
+    process.env.AUTH_MODE = "gateway";
+    process.env.DUBBER_TOOL_TIERS = tiers;
+    expect(await refused()).toContain("Invalid DUBBER_TOOL_TIERS entry");
   });
 
   it("refuses a DUBBER_TOOL_TIERS typo", async () => {
@@ -660,15 +702,7 @@ describe("HTTP tool tiers (X-Conduit-Tool-Tiers)", () => {
     expect(await listedTools(server.port, { "x-conduit-tool-tiers": "read,write,admin" })).toHaveLength(16);
   });
 
-  it("DUBBER_TOOL_TIERS widens the surface to all 37 tools; the header narrows per request", async () => {
-    process.env.DUBBER_TOOL_TIERS = "read,write,admin";
-    const server = await listen();
-    expect(await listedTools(server.port)).toHaveLength(37);
-    expect(await listedTools(server.port, { "x-conduit-tool-tiers": "read,write" })).toHaveLength(32);
-  });
-
   it("a tool outside the request's tiers is answered as unknown, before any Dubber call", async () => {
-    process.env.DUBBER_TOOL_TIERS = "read,write,admin";
     const server = await listen();
     const response = await sendHttp({
       port: server.port,
@@ -676,18 +710,18 @@ describe("HTTP tool tiers (X-Conduit-Tool-Tiers)", () => {
       path: "/mcp",
       headers: mcpHeaders({
         "x-gateway-s2s": mintS2sHeader(S2S_SECRET),
-        "x-conduit-tool-tiers": "read",
+        "x-conduit-tool-tiers": "",
         ...gatewayHeaders,
       }),
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: 1,
         method: "tools/call",
-        params: { name: "dubber_users_delete", arguments: { userId: "u-1", confirm_destructive_action: true } },
+        params: { name: "dubber_profile_get", arguments: {} },
       }),
     });
     const text = (parseJson(response) as { result: { content: { text: string }[] } }).result.content[0]!.text;
-    expect(text).toBe("Unknown tool: dubber_users_delete");
+    expect(text).toBe("Unknown tool: dubber_profile_get");
     expect(outbound).toEqual([]);
   });
 });

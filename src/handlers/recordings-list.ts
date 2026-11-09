@@ -2,14 +2,19 @@
  * dubber_recordings_list: limit/offset/time-window listing on top of Dubber's
  * real paging model (WYREAI-567).
  *
- * Dubber's GET /accounts/:id/recordings has only `count` (max 100), `page`
- * (max 5 pages), the `before_id` cursor and `query`. It has NO limit/offset and
- * NO date filter, and it silently ignores unknown params. So this handler
- * walks the newest-first list with count=100 + before_id and applies
- * offset/limit/time filtering itself.
+ * Get_Account_Recordings documents only `count` (max 100), `page`, the
+ * `before_id` cursor, `dub_point` and `team`. It has NO limit/offset and NO
+ * date filter, and it silently ignores unknown params (so an undocumented
+ * `query` is not offered: an ignored filter would return every recording).
+ * This handler walks the newest-first list with count=100 + before_id and
+ * applies offset/limit/time filtering itself.
+ *
+ * Dubber rate-limits with 403 (codes 1021/1022/1024). A rate limit after the
+ * first page ends the scan early and returns what was collected plus a
+ * cursor, so the caller can resume instead of losing the pages already read.
  */
 import type { Recording } from "@wyre-ai/node-dubber";
-import type { DubberApi } from "../dubber-api.js";
+import { rateLimitOf, type DubberApi } from "../dubber-api.js";
 import {
   jsonResult,
   optionalInteger,
@@ -21,8 +26,8 @@ import {
 
 /** Dubber's maximum `count` per request. */
 export const DUBBER_PAGE_SIZE = 100;
-/** Hard cap on Dubber requests per tool call (25 * 100 = 2,500 recordings scanned). */
-export const MAX_REQUESTS_PER_CALL = 25;
+/** Hard cap on Dubber requests per tool call (10 * 100 = 1,000 recordings scanned). */
+export const MAX_REQUESTS_PER_CALL = 10;
 export const DEFAULT_LIMIT = 100;
 export const MAX_LIMIT = 500;
 
@@ -30,7 +35,6 @@ export const MAX_LIMIT = 500;
 export interface RecordingsPageParams {
   count: number;
   before_id?: string;
-  query?: string;
   dub_point?: string;
   team?: string;
 }
@@ -140,7 +144,6 @@ export async function listRecordings(client: DubberApi, args: Record<string, unk
     }
     cursor = raw.trim();
   }
-  const query = optionalString(args, "query")?.trim() || undefined;
   const dubPointId = optionalId(args, "dubPointId");
   const teamId = optionalId(args, "teamId");
   if (dubPointId !== undefined && teamId !== undefined) {
@@ -173,14 +176,25 @@ export async function listRecordings(client: DubberApi, args: Record<string, unk
   let hasMore = false;
   let nextCursor: string | null = null;
   let scanCapReached = false;
+  let rateLimited: string | undefined;
 
   paging: for (;;) {
     const params: RecordingsPageParams = { count: DUBBER_PAGE_SIZE };
     if (beforeId !== undefined) params.before_id = beforeId;
-    if (query !== undefined) params.query = query;
     if (dubPointId !== undefined) params.dub_point = dubPointId;
     if (teamId !== undefined) params.team = teamId;
-    const page = await fetchRecordingsPage(client, accountId, params);
+    let page: Recording[];
+    try {
+      page = await fetchRecordingsPage(client, accountId, params);
+    } catch (error) {
+      const rateLimit = rateLimitOf(error);
+      // Nothing read yet: report the error. Otherwise keep what was read and hand back a cursor.
+      if (!rateLimit || requests === 0) throw error;
+      rateLimited = rateLimit.kind === "daily" ? "Dubber's daily rate limit" : "Dubber's rate limit";
+      hasMore = true;
+      nextCursor = beforeId ?? null;
+      break;
+    }
     requests += 1;
     if (page.length === 0) break;
 
@@ -232,7 +246,12 @@ export async function listRecordings(client: DubberApi, args: Record<string, unk
   }
 
   let note: string | undefined;
-  if (scanCapReached) {
+  if (rateLimited) {
+    note =
+      `${rateLimited} stopped the scan after ${requests} Dubber requests. ` +
+      `Call again with cursor="${nextCursor}" and offset=${toSkip} (same filters) to continue` +
+      (rateLimited.includes("daily") ? " once the daily quota resets." : " in a few seconds.");
+  } else if (scanCapReached) {
     note =
       `Scan cap reached (${requests} Dubber requests, ${scanned} recordings examined) before the limit was met. ` +
       `Call again with cursor="${nextCursor}" and offset=${toSkip} (same filters) to continue.`;
@@ -255,12 +274,12 @@ export async function listRecordings(client: DubberApi, args: Record<string, unk
     scanned,
     requests,
     scanCapReached,
+    ...(rateLimited ? { rateLimited: true } : {}),
     ...(timeFiltered ? { excludedUnparseableStartTime: unparseable } : {}),
     filters: {
       limit,
       offset,
       cursor: cursor ?? null,
-      query: query ?? null,
       dubPointId: dubPointId ?? null,
       teamId: teamId ?? null,
       startTimeFrom: fromMs === undefined ? null : new Date(fromMs).toISOString(),

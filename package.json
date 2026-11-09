@@ -1,7 +1,7 @@
 {
   "name": "@wyre-ai/dubber-mcp",
   "version": "0.0.0-semantically-released",
-  "description": "Dubber MCP server for Claude: call recordings, groups, accounts, users, notifications (REST hooks), and Dub.Point telecom integration",
+  "description": "Read-only Dubber MCP server for Claude: call recordings, groups, accounts, users, notifications (REST hooks), and Dub.Point telecom integration",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

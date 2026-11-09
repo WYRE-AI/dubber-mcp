@@ -1,8 +1,9 @@
 /**
  * WYREAI-567: dubber_recordings_list against the REAL guarded client
  * (dubber-api.ts transport + node-dubber resources + token cache) with only
- * `fetch` mocked. The fake Dubber honours count/before_id/after_id/query and,
- * like the real API, silently IGNORES anything else (limit, offset, page, ...).
+ * `fetch` mocked. The fake Dubber honours the documented count/before_id/
+ * dub_point/team and, like the real API, silently IGNORES anything else
+ * (limit, offset, page, query, ...). Tokens use Dubber's sample 240 s lifetime.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDubberApi, type DubberApi } from "../dubber-api.js";
@@ -51,6 +52,8 @@ function dataset(n: number): FakeRec[] {
 interface FakeDubber {
   requests: URL[];
   tokenCalls: number;
+  /** 1-based recordings request number that answers Dubber's 403 rate limit instead. */
+  rateLimitOnRequest?: number;
 }
 
 function installFakeDubber(all: FakeRec[]): FakeDubber {
@@ -64,23 +67,27 @@ function installFakeDubber(all: FakeRec[]): FakeDubber {
       if (url.pathname.endsWith("/token")) {
         expect(init?.method).toBe("POST");
         state.tokenCalls += 1;
-        return json({ access_token: "tok", expires_in: 86400, token_type: "Bearer" });
+        return json({ access_token: "tok", expires_in: 240, token_type: "Bearer" });
       }
       expect(url.origin + url.pathname).toBe(`${BASE_URL}/accounts/${ACCOUNT}/recordings`);
       state.requests.push(url);
+      if (state.requests.length === state.rateLimitOnRequest) {
+        return new Response(JSON.stringify({ code: 1021, message: "Queries Per Second Limit" }), {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        });
+      }
       let rows = all;
       const beforeId = url.searchParams.get("before_id");
       const afterId = url.searchParams.get("after_id");
       if (beforeId) rows = rows.slice(rows.findIndex((r) => r.id === beforeId) + 1);
       if (afterId) rows = rows.slice(0, rows.findIndex((r) => r.id === afterId));
-      const q = url.searchParams.get("query");
       const dubPoint = url.searchParams.get("dub_point");
       const team = url.searchParams.get("team");
       if (dubPoint) rows = rows.filter((r) => r.dub_point === dubPoint);
       if (team) rows = rows.filter((r) => r.team === team);
-      if (q) rows = rows.filter((r) => r.to.includes(q));
       const count = Math.min(Number(url.searchParams.get("count") ?? 20), 100);
-      // limit / offset / page / anything else: silently ignored, like Dubber.
+      // limit / offset / page / query / anything else: silently ignored, like Dubber.
       return json({ self: url.href, recordings: rows.slice(0, count).map(({ ms: _ms, ...r }) => r) });
     })
   );
@@ -108,6 +115,7 @@ interface ListResult {
   scanned: number;
   requests: number;
   scanCapReached: boolean;
+  rateLimited?: boolean;
   note?: string;
   filters: Record<string, unknown>;
 }
@@ -136,13 +144,14 @@ describe("dubber_recordings_list paging (real guarded client, mocked fetch)", ()
   it("never sends limit/offset (or any undocumented param) to Dubber", async () => {
     const client = realClient();
     await list(client, { limit: 250, offset: 40, query: "6140", startTimeFrom: WEEK_FROM });
+    // `query` is not a documented Dubber param, so it is never sent (and not an input).
     expect(fake.requests.length).toBeGreaterThan(0);
     for (const url of fake.requests) {
       expect(url.searchParams.has("limit")).toBe(false);
       expect(url.searchParams.has("offset")).toBe(false);
       expect(url.searchParams.has("page")).toBe(false);
       expect(url.searchParams.get("count")).toBe("100");
-      expect([...url.searchParams.keys()].every((k) => ["count", "before_id", "query"].includes(k))).toBe(true);
+      expect([...url.searchParams.keys()].every((k) => ["count", "before_id"].includes(k))).toBe(true);
     }
     expect(fake.requests[0]!.searchParams.has("before_id")).toBe(false);
   });
@@ -280,17 +289,17 @@ describe("dubber_recordings_list paging (real guarded client, mocked fetch)", ()
     expect(seen).toEqual(all.map((x) => x.id));
   });
 
-  it("nextCursor resumes with no gaps or duplicates (time window + query)", async () => {
+  it("nextCursor resumes with no gaps or duplicates (time window + team)", async () => {
     const client = realClient();
     const from = Date.parse(WEEK_FROM);
     const to = Date.parse(WEEK_TO);
-    const expected = all.filter((x) => x.ms >= from && x.ms < to && x.to.includes("6140000000")).map((x) => x.id);
+    const expected = all.filter((x) => x.ms >= from && x.ms < to && x.team === "team-a").map((x) => x.id);
     const seen: string[] = [];
     let cursor: string | undefined;
     for (let guard = 0; guard < 50; guard++) {
       const r = await list(client, {
         limit: 77,
-        query: "6140000000",
+        teamId: "team-a",
         startTimeFrom: WEEK_FROM,
         startTimeTo: WEEK_TO,
         ...(cursor ? { cursor } : {}),
@@ -319,20 +328,20 @@ describe("dubber_recordings_list paging (real guarded client, mocked fetch)", ()
     expect(r.requests).toBeGreaterThanOrEqual(2);
   });
 
-  it("caps a call at 25 Dubber requests and resumes via nextCursor", async () => {
-    all = dataset(3000);
+  it("caps a call at 10 Dubber requests and resumes via nextCursor", async () => {
+    all = dataset(1500);
     fake = installFakeDubber(all);
     const client = realClient();
     // Matches nothing, and no recording is "before from", so the scan can't end early.
     const first = await list(client, { startTimeTo: "2000-01-01", limit: 10 });
-    expect(first.requests).toBe(25);
-    expect(first.scanned).toBe(2500);
+    expect(first.requests).toBe(10);
+    expect(first.scanned).toBe(1000);
     expect(first.scanCapReached).toBe(true);
     expect(first.hasMore).toBe(true);
     expect(first.returned).toBe(0);
-    expect(first.nextCursor).toBe(all[2499]!.id);
+    expect(first.nextCursor).toBe(all[999]!.id);
     expect(first.note).toContain(first.nextCursor!);
-    expect(fake.requests).toHaveLength(25);
+    expect(fake.requests).toHaveLength(10);
 
     // Continue: the remaining 500 take 5 full pages + 1 empty page.
     const second = await list(client, { startTimeTo: "2000-01-01", limit: 10, cursor: first.nextCursor! });
@@ -343,19 +352,41 @@ describe("dubber_recordings_list paging (real guarded client, mocked fetch)", ()
   });
 
   it("cap hit with matches collects them and resumes without loss", async () => {
-    all = dataset(3000);
+    all = dataset(1500);
     fake = installFakeDubber(all);
     const client = realClient();
-    // offset beyond the first 2,500 forces the scan cap before anything is returned.
-    const first = await list(client, { offset: 2700, limit: 50 });
+    // offset beyond the first 1,000 forces the scan cap before anything is returned.
+    const first = await list(client, { offset: 1200, limit: 50 });
     expect(first.scanCapReached).toBe(true);
     expect(first.returned).toBe(0);
-    // 2,500 of the 2,700 were skipped; the caller must resume with the remaining 200.
+    // 1,000 of the 1,200 were skipped; the caller must resume with the remaining 200.
     expect(first.remainingOffset).toBe(200);
     expect(first.note).toContain('offset=200');
     const second = await list(client, { offset: first.remainingOffset, limit: 50, cursor: first.nextCursor! });
     expect(second.remainingOffset).toBe(0);
-    expect(ids(second)).toEqual(all.slice(2700, 2750).map((x) => x.id));
+    expect(ids(second)).toEqual(all.slice(1200, 1250).map((x) => x.id));
+  });
+
+  it("a rate limit after the first page returns what was collected plus a resumable cursor", async () => {
+    fake.rateLimitOnRequest = 3;
+    const client = realClient();
+    const first = await list(client, { limit: 400 });
+    expect(first.requests).toBe(2);
+    expect(ids(first)).toEqual(all.slice(0, 200).map((x) => x.id));
+    expect(first).toMatchObject({ hasMore: true, nextCursor: all[199]!.id, remainingOffset: 0, rateLimited: true });
+    expect(first.note).toContain("rate limit");
+    expect(first.note).toContain(`cursor="${all[199]!.id}"`);
+
+    fake.rateLimitOnRequest = undefined;
+    const second = await list(client, { limit: 200, cursor: first.nextCursor! });
+    expect(ids(second)).toEqual(all.slice(200, 400).map((x) => x.id));
+  });
+
+  it("a rate limit on the first page is an error, not an empty list", async () => {
+    fake.rateLimitOnRequest = 1;
+    const result = (await handleToolCall(realClient(), "dubber_recordings_list", { accountId: ACCOUNT })) as ToolResult;
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain("rate limit (code 1021)");
   });
 
   it("mints a single token for the whole multi-page call", async () => {

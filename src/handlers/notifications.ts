@@ -1,17 +1,5 @@
 import type { DubberApi } from "../dubber-api.js";
-import { confirmDestructive, type ElicitationContext } from "../elicitation.js";
-import {
-  errorResult,
-  jsonResult,
-  requireObject,
-  requireId,
-  requireString,
-  textResult,
-  type ToolHandler,
-  type ToolResult,
-} from "./results.js";
-
-const CANCELLED = "Cancelled — nothing was changed.";
+import { jsonResult, requireId, type ToolHandler, type ToolResult } from "./results.js";
 
 async function list(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
   const notifications = await client.notifications.list(requireId(args, "accountId"));
@@ -19,58 +7,11 @@ async function list(client: DubberApi, args: Record<string, unknown>): Promise<T
   return jsonResult(notifications);
 }
 
-async function create(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
-  const accountId = requireId(args, "accountId");
-  const url = requireString(args, "url");
-  const event = requireString(args, "event");
-  return jsonResult(await client.notifications.create(accountId, { url, event }));
-}
-
 async function get(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
   return jsonResult(await client.notifications.get(requireId(args, "notificationId")));
 }
 
-async function update(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
-  const notificationId = requireId(args, "notificationId");
-  const data = requireObject(args, "data");
-  return jsonResult(await client.notifications.update(notificationId, data));
-}
-
-async function activate(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
-  return jsonResult(await client.notifications.activate(requireId(args, "notificationId")));
-}
-
-async function listUnclaimed(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
-  const events = await client.notifications.listUnclaimed(requireId(args, "notificationId"));
-  if (events.length === 0) return jsonResult({ events: [], note: "No unclaimed events." });
-  return jsonResult(events);
-}
-
-async function deleteNotification(
-  client: DubberApi,
-  args: Record<string, unknown>,
-  elicitation: ElicitationContext
-) {
-  const notificationId = requireId(args, "notificationId");
-  const gate = confirmDestructive(
-    elicitation,
-    args,
-    `Delete notification subscription ${notificationId}? The integration stops receiving events immediately.`
-  );
-  if (gate.kind === "ask") return gate.result;
-  if (gate.kind === "blocked") return errorResult(gate.message);
-  if (gate.kind === "refused") return textResult(CANCELLED);
-
-  await client.notifications.delete(notificationId);
-  return textResult(`Notification subscription ${notificationId} deleted.`);
-}
-
 export const NOTIFICATIONS_HANDLERS: Record<string, ToolHandler> = {
   dubber_notifications_list: list,
-  dubber_notifications_create: create,
   dubber_notifications_get: get,
-  dubber_notifications_update: update,
-  dubber_notifications_activate: activate,
-  dubber_notifications_list_unclaimed: listUnclaimed,
-  dubber_notifications_delete: deleteNotification,
 };

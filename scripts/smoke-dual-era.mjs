@@ -218,7 +218,7 @@ async function stdioLeg() {
     const text = refused.content?.[0]?.text ?? '';
     check('traversal id refused before any request', refused.isError === true && text.includes('single ID'), text.slice(0, 120));
     const hidden = await client.callTool({ name: 'dubber_users_delete', arguments: { userId: 'u-1' } });
-    check('admin tool is unknown at default tiers', hidden.isError === true, hidden.content?.[0]?.text ?? '');
+    check('no write or admin tool exists (read-only server)', hidden.isError === true, hidden.content?.[0]?.text ?? '');
   } finally {
     await client.close();
   }

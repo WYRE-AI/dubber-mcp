@@ -1,7 +1,5 @@
 /** Shared tool-result helpers, the handler signature, and argument validation. */
-import type { InputRequiredResult } from "@modelcontextprotocol/server";
 import type { DubberApi } from "../dubber-api.js";
-import type { ElicitationContext } from "../elicitation.js";
 import { redactValue } from "../redact.js";
 
 export type ToolContent =
@@ -19,11 +17,7 @@ export interface ToolResult {
  * DubberError, …): the dispatcher in handlers/index.ts turns every throw
  * into an isError result, so nothing ever escapes to the transport.
  */
-export type ToolHandler = (
-  client: DubberApi,
-  args: Record<string, unknown>,
-  elicitation: ElicitationContext
-) => Promise<ToolResult | InputRequiredResult>;
+export type ToolHandler = (client: DubberApi, args: Record<string, unknown>) => Promise<ToolResult>;
 
 /** JSON tool output. Values under credential-named keys are redacted; mcp-server.ts redacts the credentials in use. */
 export function jsonResult(value: unknown): ToolResult {
@@ -95,30 +89,26 @@ export function optionalInteger(args: Record<string, unknown>, key: string): num
   return num;
 }
 
+/** Optional integer in [min, max]; ToolInputError otherwise. */
+export function optionalIntegerInRange(
+  args: Record<string, unknown>,
+  key: string,
+  min: number,
+  max: number
+): number | undefined {
+  const value = optionalInteger(args, key);
+  if (value !== undefined && (value < min || value > max)) {
+    throw new ToolInputError(
+      `Argument "${key}" must be an integer between ${min} and ${max === Infinity ? "infinity" : max}; got ${value}.`
+    );
+  }
+  return value;
+}
+
 export function requireObject(args: Record<string, unknown>, key: string): Record<string, unknown> {
   const value = args[key];
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new ToolInputError(`Argument "${key}" is required and must be an object.`);
   }
   return value as Record<string, unknown>;
-}
-
-export function optionalObject(
-  args: Record<string, unknown>,
-  key: string
-): Record<string, unknown> | undefined {
-  const value = args[key];
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== "object" || Array.isArray(value)) {
-    throw new ToolInputError(`Argument "${key}" must be an object.`);
-  }
-  return value as Record<string, unknown>;
-}
-
-export function requireStringArray(args: Record<string, unknown>, key: string): string[] {
-  const value = args[key];
-  if (!Array.isArray(value) || value.length === 0 || !value.every((v) => typeof v === "string")) {
-    throw new ToolInputError(`Argument "${key}" is required and must be a non-empty array of strings.`);
-  }
-  return value as string[];
 }

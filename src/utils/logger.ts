@@ -3,10 +3,10 @@
  * stdio mode, so every log line goes to stderr regardless of transport.
  *
  * Every line is redacted as a whole (message and metadata): the env-mode
- * credentials, the S2S secret, the per-request gateway credentials in scope,
- * bearer tokens, and signed-URL signatures.
+ * credentials, the S2S secret, the per-request gateway credentials in scope
+ * and their access token, bearer tokens, and signed-URL signatures.
  */
-import { secretsOf } from "../credentials.js";
+import { secretsInUse } from "../dubber-api.js";
 import { redactLogText } from "../redact.js";
 import { currentRequestScope } from "../request-scope.js";
 
@@ -26,7 +26,7 @@ function knownSecrets(): (string | undefined)[] {
     env.DUBBER_CLIENT_ID?.trim(),
     env.DUBBER_CLIENT_SECRET?.trim(),
     env.DUBBER_AUTH_TOKEN?.trim(),
-    ...secretsOf(currentRequestScope()?.credentials),
+    ...secretsInUse(currentRequestScope()?.credentials),
   ];
 }
 

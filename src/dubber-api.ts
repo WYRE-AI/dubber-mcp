@@ -13,8 +13,10 @@
  * - vendor errors keep the HTTP status, the vendor message and a request id;
  * - no automatic retries, except one token refresh after a 401.
  *
- * Tokens are cached per credential set for their lifetime (Dubber allows
- * about 500 calls per token per 24 h, so minting per call is not an option).
+ * Tokens are cached per credential set and reused for the first half of
+ * their lifetime (at most until 30 minutes before expiry). Dubber's Getting
+ * Started guide caps tokens at about 500 per 24 h and says to store them, so
+ * minting per call is not an option, even for its 240 s sample tokens.
  */
 import { createHash } from "node:crypto";
 import {
@@ -24,6 +26,7 @@ import {
   GroupsResource,
   NotificationsResource,
   ProfileResource,
+  RateLimitError,
   RecordingsResource,
   TokenCache,
   UsersResource,
@@ -33,7 +36,7 @@ import {
   type RequestOptions,
 } from "@wyre-ai/node-dubber";
 import { DUBBER_ORIGIN, MAX_UPSTREAM_BYTES, REQUEST_TIMEOUT_MS } from "./config.js";
-import type { DubberCredentials } from "./credentials.js";
+import { secretsOf, type DubberCredentials } from "./credentials.js";
 
 /** A DubberError that also carries the vendor's request id, when one was sent. */
 export type DubberApiError = DubberError & { requestId?: string };
@@ -41,7 +44,11 @@ export type DubberApiError = DubberError & { requestId?: string };
 /** Response headers that may carry a vendor request id (Mashery fronts the API). */
 const REQUEST_ID_HEADERS = ["x-request-id", "x-mashery-message-id", "x-amzn-requestid"];
 
-const EXPIRY_MARGIN_MS = 30 * 60_000;
+/** Refresh margin bounds: half the token's lifetime, but no more than 30 min and no less than 5 s. */
+const MAX_EXPIRY_MARGIN_MS = 30 * 60_000;
+const MIN_EXPIRY_MARGIN_MS = 5_000;
+/** Dubber's documented token lifetime, used when a mint response omits expires_in. */
+const DEFAULT_TOKEN_LIFETIME_S = 24 * 60 * 60;
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
 
 const tokenCache = new TokenCache();
@@ -131,6 +138,35 @@ function parseBody(text: string): unknown {
   }
 }
 
+/**
+ * Dubber rate-limits with HTTP 403, not 429 (HTTP_Responses: "403 Account
+ * Over Rate Limit"; API Error Dictionary: 1021 Queries Per Second Limit,
+ * 1022 Account Rate Limit (daily), 1024 Rate Limit Exceeded). "retry" means
+ * wait a few seconds; "daily" means the account's daily quota is used up.
+ */
+export type RateLimitKind = { kind: "retry" | "daily"; code?: number };
+
+const RETRY_CODES = new Set([1021, 1024]);
+const DAILY_CODE = 1022;
+
+function errorCode(body: unknown): number | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const b = body as Record<string, unknown>;
+  const nested = b["error"] && typeof b["error"] === "object" ? (b["error"] as Record<string, unknown>)["code"] : undefined;
+  const raw = b["code"] ?? nested;
+  const code = typeof raw === "string" ? Number.parseInt(raw, 10) : raw;
+  return typeof code === "number" && Number.isFinite(code) ? code : undefined;
+}
+
+export function rateLimitOf(error: unknown): RateLimitKind | undefined {
+  if (error instanceof RateLimitError) return { kind: "retry" };
+  if (!(error instanceof DubberError) || error.statusCode !== 403) return undefined;
+  const code = errorCode(error.response);
+  if (code === DAILY_CODE) return { kind: "daily", code };
+  if (code !== undefined && RETRY_CODES.has(code)) return { kind: "retry", code };
+  return /rate limit|per second limit/i.test(error.message) ? { kind: "retry" } : undefined;
+}
+
 async function vendorError(res: Response): Promise<DubberApiError> {
   const body = parseBody(await readBounded(res, MAX_ERROR_BODY_BYTES).catch(() => ""));
   const error: DubberApiError = parseDubberError(res.status, body, res.headers);
@@ -163,19 +199,20 @@ async function mint(creds: DubberCredentials, key: string): Promise<DubberToken>
   if (typeof accessToken !== "string" || accessToken === "") {
     throw new DubberError("Dubber token endpoint returned no access_token.", res.status, undefined);
   }
-  const token: DubberToken = {
-    accessToken,
-    expiresAt: Date.now() + (Number(body?.["expires_in"]) || 0) * 1000,
-  };
+  const expiresIn = Number(body?.["expires_in"]);
+  const lifetimeMs = (Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : DEFAULT_TOKEN_LIFETIME_S) * 1000;
+  const marginMs = Math.max(MIN_EXPIRY_MARGIN_MS, Math.min(MAX_EXPIRY_MARGIN_MS, lifetimeMs / 2));
+  // expiresAt here is when this server stops reusing the token, not Dubber's hard expiry.
+  const token: DubberToken = { accessToken, expiresAt: Date.now() + lifetimeMs - marginMs };
   tokenCache.set(key, token);
   return token;
 }
 
-/** Cached token while still valid (with a margin), otherwise one shared mint. */
+/** Cached token until its refresh time, otherwise one shared mint. */
 async function getToken(creds: DubberCredentials): Promise<DubberToken> {
   const key = cacheKey(creds);
   const cached = tokenCache.get(key);
-  if (cached && Date.now() < cached.expiresAt - EXPIRY_MARGIN_MS) return cached;
+  if (cached && Date.now() < cached.expiresAt) return cached;
   let pending = inFlight.get(key);
   if (!pending) {
     pending = mint(creds, key).finally(() => inFlight.delete(key));
@@ -184,7 +221,19 @@ async function getToken(creds: DubberCredentials): Promise<DubberToken> {
   return pending;
 }
 
-/** The subset of node-dubber's HttpClient that its resource classes call. */
+/** Values that must never appear in tool output or logs: the credentials and the access token in use. */
+export function secretsInUse(creds: DubberCredentials | undefined): string[] {
+  if (!creds) return [];
+  const token = tokenCache.get(cacheKey(creds))?.accessToken;
+  return token ? [...secretsOf(creds), token] : secretsOf(creds);
+}
+
+/**
+ * The subset of node-dubber's HttpClient that its resource classes call.
+ * Only JSON GET-style requests are supported: RequestOptions.headers is
+ * ignored and responseType "binary" is refused, so a future audio download
+ * tool (recordings.download sends Accept: audio/*) needs both added here.
+ */
 class GuardedHttp {
   constructor(private readonly creds: DubberCredentials) {}
 
@@ -220,7 +269,11 @@ export interface ConnectionTestResult {
   error?: string;
 }
 
-/** The client handed to tool handlers. Same resource surface as node-dubber's DubberClient. */
+/**
+ * The client handed to tool handlers: node-dubber's resource classes, plus
+ * the guarded `request` for documented endpoints node-dubber does not cover
+ * (or covers without their paging params).
+ */
 export interface DubberApi {
   groups: GroupsResource;
   accounts: AccountsResource;
@@ -229,14 +282,15 @@ export interface DubberApi {
   profile: ProfileResource;
   notifications: NotificationsResource;
   dubPoints: DubPointsResource;
+  request<T>(path: string, options?: RequestOptions): Promise<T>;
   testConnection(): Promise<ConnectionTestResult>;
-  revokeToken(): Promise<void>;
 }
 
 export function createDubberApi(creds: DubberCredentials): DubberApi {
   // node-dubber types the constructor argument as its HttpClient class; the
   // resources only ever call request(), which GuardedHttp implements.
-  const http = new GuardedHttp(creds) as unknown as HttpClient;
+  const guarded = new GuardedHttp(creds);
+  const http = guarded as unknown as HttpClient;
   return {
     groups: new GroupsResource(http),
     accounts: new AccountsResource(http),
@@ -245,6 +299,7 @@ export function createDubberApi(creds: DubberCredentials): DubberApi {
     profile: new ProfileResource(http),
     notifications: new NotificationsResource(http),
     dubPoints: new DubPointsResource(http),
+    request: <T>(path: string, options?: RequestOptions) => guarded.request<T>(path, options),
 
     async testConnection() {
       try {
@@ -253,23 +308,6 @@ export function createDubberApi(creds: DubberCredentials): DubberApi {
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
-    },
-
-    /** Dubber's `POST /revoke` (RFC 7009 shape; see node-dubber's revokeToken). */
-    async revokeToken() {
-      const token = await getToken(creds);
-      const res = await send(buildUrl(creds, "/revoke"), {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          token: token.accessToken,
-          client_id: creds.clientId,
-          client_secret: creds.clientSecret,
-        }).toString(),
-      });
-      if (!res.ok) throw await vendorError(res);
-      await res.body?.cancel().catch(() => undefined);
-      tokenCache.delete(cacheKey(creds));
     },
   };
 }

@@ -43,8 +43,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # 0.0.0.0 is safe only because startup refuses to listen without a real
 # CONDUIT_S2S_SECRET, supplied at runtime by the platform and never baked into
 # the image. AUTH_MODE=gateway never reads DUBBER_* credentials; they arrive
-# per request on the X-Dubber-* headers. Read tier only unless the platform
-# sets DUBBER_TOOL_TIERS (e.g. read,write,admin).
+# per request on the X-Dubber-* headers. Every tool is read-only; read is the
+# only tier, and any other DUBBER_TOOL_TIERS value refuses to start.
 ENV NODE_ENV=production \
     LOG_LEVEL=info \
     MCP_TRANSPORT=http \

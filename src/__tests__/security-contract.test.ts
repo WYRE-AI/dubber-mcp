@@ -46,6 +46,8 @@ type Responder = (req: Sent) => Response;
 
 let sent: Sent[] = [];
 let respond: Responder;
+/** Dubber's documented Authorization_by_Password sample returns expires_in: 240. */
+let tokenBody: Record<string, unknown>;
 const realFetch = globalThis.fetch;
 
 function json(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
@@ -65,7 +67,7 @@ function installFetch(): void {
       redirect: init.redirect,
     };
     sent.push(req);
-    if (req.url.pathname.endsWith("/token")) return json({ access_token: ACCESS_TOKEN, expires_in: 86400 });
+    if (req.url.pathname.endsWith("/token")) return json(tokenBody);
     return respond(req);
   });
 }
@@ -78,12 +80,14 @@ function text(result: unknown): string {
 beforeEach(() => {
   sent = [];
   respond = () => json({ id: "ok" });
+  tokenBody = { access_token: ACCESS_TOKEN, token_type: "bearer", expires_in: 240 };
   clearTokenCache();
   installFetch();
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("auth headers", () => {
@@ -139,13 +143,23 @@ describe("fixed origin, exact path, path parameters", () => {
     expect(buildUrl(CREDS, "//evil.example/x").origin).toBe("https://api.dubber.net");
   });
 
-  it("passes pagination and filter params through as query params, never auto-paging dub points", async () => {
+  it("passes the documented dub point lookup keys through as query params, URL-encoded", async () => {
     respond = () => json({ dub_points: [{ id: "dp-1" }] });
-    await handleToolCall(createDubberApi(CREDS), "dubber_dub_points_find", { query: { external_id: "a&b=c", n: 2 } });
+    await handleToolCall(createDubberApi(CREDS), "dubber_dub_points_find", {
+      query: { external_type: "broadworks", external_identifier: "a&b=c" },
+    });
     expect(sent[1]!.url.pathname).toBe("/au/v1/dub_points/find");
-    expect(Object.fromEntries(sent[1]!.url.searchParams)).toEqual({ external_id: "a&b=c", n: "2" });
-    const nested = await handleToolCall(createDubberApi(CREDS), "dubber_dub_points_find", { query: { a: { b: 1 } } });
-    expect(text(nested)).toContain('"query.a" must be a string, number, or boolean');
+    expect(Object.fromEntries(sent[1]!.url.searchParams)).toEqual({ external_type: "broadworks", external_identifier: "a&b=c" });
+  });
+
+  it.each([
+    [{ external_id: "x" }, '"query.external_id" is not a Dubber dub point lookup key'],
+    [{ external_type: { b: 1 } }, '"query.external_type" must be a string'],
+    [{}, '"query" needs at least one of'],
+  ])("dubber_dub_points_find rejects %j before any request", async (query, message) => {
+    const result = await handleToolCall(createDubberApi(CREDS), "dubber_dub_points_find", { query });
+    expect(text(result)).toContain(message);
+    expect(sent).toEqual([]);
   });
 });
 
@@ -184,6 +198,25 @@ describe("error mapping", () => {
     );
   });
 
+  it.each([
+    [{ code: 1021, message: "Queries Per Second Limit" }, "rate limit (code 1021)", "retry in a few seconds"],
+    [{ error: { code: 1024, message: "Rate Limit Exceeded" } }, "rate limit (code 1024)", "retry in a few seconds"],
+    [{ code: 1022, message: "Account Rate Limit" }, "daily rate limit (code 1022)", "used up"],
+    [{ message: "Account Over Rate Limit" }, "rate limit", "retry in a few seconds"],
+  ])("maps Dubber's 403 rate limit %j to a rate-limit message, not an access hint", async (body, kind, hint) => {
+    respond = () => json(body, 403);
+    const result = await handleToolCall(createDubberApi(CREDS), "dubber_accounts_get", { accountId: "acc-1" });
+    expect(text(result)).toContain(kind);
+    expect(text(result)).toContain(hint);
+    expect(text(result)).not.toContain("lack access");
+  });
+
+  it("keeps the access hint on a plain 403", async () => {
+    respond = () => json({ message: "Forbidden" }, 403);
+    const result = await handleToolCall(createDubberApi(CREDS), "dubber_accounts_get", { accountId: "acc-1" });
+    expect(text(result)).toBe("Dubber error (HTTP 403): Forbidden The credentials may lack access to this account/group.");
+  });
+
   it("maps 404 with the vendor's message", async () => {
     respond = () => json({ error: { message: "Recording not found" } }, 404, { "x-request-id": "req-404" });
     const result = await handleToolCall(createDubberApi(CREDS), "dubber_recordings_get", { recordingId: "r-9" });
@@ -205,41 +238,131 @@ describe("redaction", () => {
   });
 });
 
-describe("read tier is truly read-only", () => {
-  const ARGS: Record<string, Record<string, unknown>> = {
-    dubber_groups_get: { groupId: "g-1" },
-    dubber_groups_list_unidentified_recordings: { groupId: "g-1" },
-    dubber_accounts_get: { accountId: "a-1" },
-    dubber_recordings_list: { accountId: "a-1", limit: 1 },
-    dubber_recordings_get: { recordingId: "r-1", listener: "listener@example.com" },
-    dubber_recordings_get_waveform: { recordingId: "r-1" },
-    dubber_users_list: { accountId: "a-1" },
-    dubber_users_get: { userId: "u-1" },
-    dubber_notifications_list: { accountId: "a-1" },
-    dubber_notifications_get: { notificationId: "n-1" },
-    dubber_notifications_list_unclaimed: { notificationId: "n-1" },
-    dubber_dub_points_list: { accountId: "a-1" },
-    dubber_dub_points_get: { dubPointId: "d-1" },
-    dubber_dub_points_find: { query: { external_id: "x" } },
+describe("every tool sends exactly the documented request (real transport, fetch stubbed)", () => {
+  /** [args, expected "METHOD path?query" lines after the token mint]. Bodies must be empty. */
+  const EXPECTED: Record<string, [Record<string, unknown>, string[]]> = {
+    dubber_test_connection: [{}, []],
+    dubber_groups_get: [{ groupId: "g-1" }, ["GET /au/v1/groups/g-1"]],
+    dubber_groups_list_unidentified_dub_points: [{ groupId: "g-1" }, ["GET /au/v1/groups/g-1/unidentified_dub_points"]],
+    dubber_accounts_get: [{ accountId: "a-1" }, ["GET /au/v1/accounts/a-1"]],
+    dubber_recordings_list: [{ accountId: "a-1", limit: 1 }, ["GET /au/v1/accounts/a-1/recordings?count=100"]],
+    dubber_recordings_get: [{ recordingId: "r-1" }, ["GET /au/v1/recordings/r-1"]],
+    dubber_recordings_get_link: [
+      { recordingId: "r-1", listener: "l@example.com" },
+      ["GET /au/v1/recordings/r-1?listener=l%40example.com"],
+    ],
+    dubber_recordings_get_waveform: [{ recordingId: "r-1" }, ["GET /au/v1/recordings/r-1/waveform"]],
+    dubber_users_list: [{ accountId: "a-1" }, ["GET /au/v1/accounts/a-1/users?count=100"]],
+    dubber_users_get: [{ userId: "u-1" }, ["GET /au/v1/users/u-1"]],
+    dubber_profile_get: [{}, ["GET /au/v1/profile"]],
+    dubber_notifications_list: [{ accountId: "a-1" }, ["GET /au/v1/accounts/a-1/notifications"]],
+    dubber_notifications_get: [{ notificationId: "n-1" }, ["GET /au/v1/notifications/n-1"]],
+    dubber_dub_points_list: [{ accountId: "a-1" }, ["GET /au/v1/accounts/a-1/dub_points?count=100"]],
+    dubber_dub_points_get: [{ dubPointId: "d-1" }, ["GET /au/v1/dub_points/d-1"]],
+    dubber_dub_points_find: [
+      { query: { external_type: "broadworks", external_identifier: "u@x" } },
+      ["GET /au/v1/dub_points/find?external_type=broadworks&external_identifier=u%40x"],
+    ],
   };
 
-  it("every read tool sends only GET requests besides the token mint", async () => {
+  it("covers every tool", () => {
+    expect(Object.keys(EXPECTED).sort()).toEqual(toolsForTiers(new Set(["read"])).map((t) => t.name).sort());
+  });
+
+  it.each(Object.entries(EXPECTED))("%s", async (name, [args, expected]) => {
     respond = () => json([]);
-    for (const tool of toolsForTiers(new Set(["read"]))) {
-      sent = [];
-      clearTokenCache();
-      const result = await handleToolCall(createDubberApi(CREDS), tool.name, ARGS[tool.name] ?? {});
-      expect((result as ToolResult).isError, `${tool.name}: ${text(result)}`).toBeFalsy();
-      const apiCalls = sent.filter((s) => !s.url.pathname.endsWith("/token"));
-      for (const call of apiCalls) expect(call.method, tool.name).toBe("GET");
-      if (!["dubber_test_connection"].includes(tool.name)) expect(apiCalls.length, tool.name).toBeGreaterThan(0);
-    }
+    const result = await handleToolCall(createDubberApi(CREDS), name, args);
+    expect((result as ToolResult).isError, text(result)).toBeFalsy();
+    const apiCalls = sent.filter((s) => !s.url.pathname.endsWith("/token"));
+    expect(apiCalls.map((c) => `${c.method} ${c.url.pathname}${c.url.search}`)).toEqual(expected);
+    for (const call of apiCalls) expect(call.body, name).toBe("");
   });
 });
 
-describe("dubber_recordings_get recording link (WYREAI-567 item 2)", () => {
+describe("list tools page explicitly and say when more exist", () => {
+  it("dubber_groups_list_unidentified_dub_points unwraps Dubber's unidentified_dub_points key", async () => {
+    respond = () => json({ self: "x", unidentified_dub_points: [{ id: "udp-1" }] });
+    const result = await handleToolCall(createDubberApi(CREDS), "dubber_groups_list_unidentified_dub_points", {
+      groupId: "g-1",
+    });
+    expect(JSON.parse(text(result))).toEqual([{ id: "udp-1" }]);
+  });
+
+  it("dubber_users_list sends count and page and flags a full page as hasMore", async () => {
+    respond = () => json({ users: Array.from({ length: 50 }, (_, i) => ({ id: `u-${i}` })) });
+    const result = await handleToolCall(createDubberApi(CREDS), "dubber_users_list", {
+      accountId: "a-1",
+      count: 50,
+      page: 2,
+    });
+    expect(sent[1]!.url.search).toBe("?count=50&page=2");
+    const body = JSON.parse(text(result));
+    expect(body).toMatchObject({ returned: 50, count: 50, page: 2, hasMore: true });
+    expect(body.users).toHaveLength(50);
+    expect(body.note).toContain("page");
+  });
+
+  it("dubber_users_list reports hasMore=false on a short page", async () => {
+    respond = () => json({ users: [{ id: "u-1" }] });
+    const body = JSON.parse(text(await handleToolCall(createDubberApi(CREDS), "dubber_users_list", { accountId: "a-1" })));
+    expect(body).toMatchObject({ returned: 1, count: 100, page: null, hasMore: false });
+  });
+
+  it("dubber_dub_points_list filters by user and pages", async () => {
+    respond = () => json({ dub_points: Array.from({ length: 20 }, (_, i) => ({ id: `dp-${i}` })) });
+    const result = await handleToolCall(createDubberApi(CREDS), "dubber_dub_points_list", {
+      accountId: "a-1",
+      userId: "u-7",
+      count: 20,
+      page: 1,
+    });
+    expect(sent[1]!.url.search).toBe("?user=u-7&count=20&page=1");
+    expect(JSON.parse(text(result))).toMatchObject({ returned: 20, hasMore: true });
+  });
+
+  it.each([
+    ["dubber_users_list", { count: 0 }, 'Argument "count"'],
+    ["dubber_users_list", { count: 101 }, 'Argument "count"'],
+    ["dubber_users_list", { page: -1 }, 'Argument "page"'],
+    ["dubber_dub_points_list", { userId: "../x" }, 'Argument "userId"'],
+  ])("%s rejects %j before any request", async (name, extra, message) => {
+    const result = await handleToolCall(createDubberApi(CREDS), name, { accountId: "a-1", ...extra });
+    expect(text(result)).toContain(message);
+    expect(sent).toEqual([]);
+  });
+});
+
+describe("token lifetime (Dubber's sample token lives 240 s)", () => {
+  it("mints once for many calls within the token's lifetime", async () => {
+    const api = createDubberApi(CREDS);
+    for (let i = 0; i < 3; i++) await handleToolCall(api, "dubber_profile_get", {});
+    expect(sent.filter((s) => s.url.pathname.endsWith("/token"))).toHaveLength(1);
+  });
+
+  it("re-mints once the token is past half its lifetime", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-09T00:00:00Z"));
+    const api = createDubberApi(CREDS);
+    await handleToolCall(api, "dubber_profile_get", {});
+    vi.setSystemTime(new Date("2026-11-09T00:01:50Z"));
+    await handleToolCall(api, "dubber_profile_get", {});
+    expect(sent.filter((s) => s.url.pathname.endsWith("/token"))).toHaveLength(1);
+    vi.setSystemTime(new Date("2026-11-09T00:02:10Z"));
+    await handleToolCall(api, "dubber_profile_get", {});
+    expect(sent.filter((s) => s.url.pathname.endsWith("/token"))).toHaveLength(2);
+  });
+
+  it("treats a missing expires_in as Dubber's documented 24 h, not zero", async () => {
+    tokenBody = { access_token: ACCESS_TOKEN };
+    const api = createDubberApi(CREDS);
+    for (let i = 0; i < 3; i++) await handleToolCall(api, "dubber_profile_get", {});
+    expect(sent.filter((s) => s.url.pathname.endsWith("/token"))).toHaveLength(1);
+  });
+});
+
+describe("dubber_recordings_get_link recording link (WYREAI-567 item 2)", () => {
   it("sends listener and content_disposition, URL-encoded", async () => {
-    await handleToolCall(createDubberApi(CREDS), "dubber_recordings_get", {
+    await handleToolCall(createDubberApi(CREDS), "dubber_recordings_get_link", {
       recordingId: "r-1",
       listener: "first.last+calls@example.com",
       contentDisposition: "attachment;filename=call 1.mp3",
@@ -249,18 +372,18 @@ describe("dubber_recordings_get recording link (WYREAI-567 item 2)", () => {
     );
   });
 
-  it("sends no query string without listener", async () => {
-    await handleToolCall(createDubberApi(CREDS), "dubber_recordings_get", { recordingId: "r-1" });
+  it("dubber_recordings_get never asks for a link, even when listener is passed", async () => {
+    await handleToolCall(createDubberApi(CREDS), "dubber_recordings_get", { recordingId: "r-1", listener: "l@example.com" });
     expect(sent[1]!.url.href).toBe(`${BASE}/recordings/r-1`);
   });
 
   it.each([
     [{ listener: "not-an-email" }, '"listener" must be the email address'],
-    [{ contentDisposition: "inline" }, 'pass "listener" too'],
+    [{ contentDisposition: "inline" }, 'Argument "listener" is required'],
     [{ listener: "a@example.com", contentDisposition: "attachment;filename=x.wav" }, '"contentDisposition" must be'],
     [{ listener: "a@example.com", contentDisposition: "inline\r\nX-Evil: 1" }, '"contentDisposition" must be'],
   ])("rejects %j before any request", async (extra, message) => {
-    const result = await handleToolCall(createDubberApi(CREDS), "dubber_recordings_get", { recordingId: "r-1", ...extra });
+    const result = await handleToolCall(createDubberApi(CREDS), "dubber_recordings_get_link", { recordingId: "r-1", ...extra });
     expect(text(result)).toContain(message);
     expect(sent).toEqual([]);
   });
@@ -317,7 +440,7 @@ describe("one mocked end-to-end read over the real MCP serving stack", () => {
   it("returns recording_url to the caller and keeps it, and every credential, out of the logs", async () => {
     respond = () =>
       json({ id: "r-1", start_time: "Sun, 28 Jul 2013 12:42:10 +1000", recording_url: SIGNED_URL });
-    const { text: out, logs } = await callTool("dubber_recordings_get", {
+    const { text: out, logs } = await callTool("dubber_recordings_get_link", {
       recordingId: "r-1",
       listener: "listener@example.com",
     });
@@ -326,6 +449,7 @@ describe("one mocked end-to-end read over the real MCP serving stack", () => {
       `POST ${BASE}/token`,
       `GET ${BASE}/recordings/r-1`,
     ]);
+    expect(sent[1]!.url.searchParams.get("listener")).toBe("listener@example.com");
     expect(logs).toContain("Tool call received");
     for (const secret of [SIGNED_URL, "test-signature-not-real", ACCESS_TOKEN, CREDS.clientSecret, CREDS.authToken]) {
       expect(logs).not.toContain(secret);
@@ -338,5 +462,12 @@ describe("one mocked end-to-end read over the real MCP serving stack", () => {
     expect(out).toBe("Dubber error (HTTP 400): bad client_secret [REDACTED] for [REDACTED]");
     expect(logs).not.toContain(CREDS.clientSecret);
     expect(logs).not.toContain(CREDS.authToken);
+  });
+
+  it("redacts the minted (opaque, non-JWT) access token when a vendor error echoes it", async () => {
+    respond = () => json({ message: `token ${ACCESS_TOKEN} is not valid for this account` }, 400);
+    const { text: out, logs } = await callTool("dubber_accounts_get", { accountId: "acc-1" });
+    expect(out).toBe("Dubber error (HTTP 400): token [REDACTED] is not valid for this account");
+    expect(logs).not.toContain(ACCESS_TOKEN);
   });
 });
