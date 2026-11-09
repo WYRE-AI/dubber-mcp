@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `dubber_recordings_list` returns what it read plus `rateLimited: true` and a resumable
   `nextCursor` when Dubber rate-limits after the first page.
 - CI guard against assigning request credentials to `process.env`.
+- Optional `MCP_ALLOWED_HOSTS` Host-header allowlist (fleet parity with anthropic-admin-mcp),
+  checked before the S2S gate. Under `MCP_ALLOW_INSECURE_DEV=1` it defaults to
+  `localhost,127.0.0.1`, so a DNS-rebinding web page cannot call a local dev server.
 - Guarded Dubber transport: fixed `https://api.dubber.net` origin, exact-path check on every
   URL, GET-only with no body (node-dubber's write methods are refused before any request),
   redirects refused, 4 MiB bounded reads, vendor request ids in errors.

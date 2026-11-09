@@ -57,6 +57,7 @@ const ENV_KEYS = [
   "MCP_ALLOW_INSECURE_DEV",
   "MCP_HTTP_PORT",
   "MCP_HTTP_HOST",
+  "MCP_ALLOWED_HOSTS",
   "AUTH_MODE",
   "DUBBER_CLIENT_ID",
   "DUBBER_CLIENT_SECRET",
@@ -190,6 +191,7 @@ beforeEach(() => {
   process.env.LOG_LEVEL = "error";
   delete process.env.CONDUIT_S2S_SECRET;
   delete process.env.MCP_ALLOW_INSECURE_DEV;
+  delete process.env.MCP_ALLOWED_HOSTS;
   delete process.env.AUTH_MODE;
   delete process.env.DUBBER_CLIENT_ID;
   delete process.env.DUBBER_CLIENT_SECRET;
@@ -744,6 +746,56 @@ describe("HTTP tool tiers (X-Conduit-Tool-Tiers)", () => {
     });
     const text = (parseJson(response) as { result: { content: { text: string }[] } }).result.content[0]!.text;
     expect(text).toBe("Unknown tool: dubber_profile_get");
+    expect(outbound).toEqual([]);
+  });
+});
+
+describe("HTTP Host allowlist (MCP_ALLOWED_HOSTS, DNS-rebinding guard)", () => {
+  /** fetch() will not send an arbitrary Host header, so this uses node:http directly. */
+  async function postWithHost(port: number, host: string, extra: Record<string, string> = {}): Promise<number> {
+    const { request } = await import("node:http");
+    return new Promise((resolve, reject) => {
+      const req = request(
+        { host: "127.0.0.1", port, path: "/mcp", method: "POST", headers: { ...mcpHeaders(extra), host } },
+        (res) => {
+          res.resume();
+          res.on("end", () => resolve(res.statusCode ?? 0));
+        }
+      );
+      req.on("error", reject);
+      req.end(toolsList);
+    });
+  }
+
+  it("answers 403 to a Host outside MCP_ALLOWED_HOSTS, before the S2S gate", async () => {
+    process.env.CONDUIT_S2S_SECRET = S2S_SECRET;
+    process.env.AUTH_MODE = "gateway";
+    process.env.MCP_ALLOWED_HOSTS = "dubber-mcp.internal, Other.Internal";
+    const { port } = await listen();
+    const s2s = { "x-gateway-s2s": mintS2sHeader(S2S_SECRET), ...gatewayHeaders };
+    expect(await postWithHost(port, "evil.example", s2s)).toBe(403);
+    expect(await postWithHost(port, "evil.example")).toBe(403);
+    expect(await postWithHost(port, `dubber-mcp.internal:${port}`, s2s)).toBe(200);
+    expect(await postWithHost(port, "other.internal", s2s)).toBe(200);
+    expect((await sendHttp({ port, path: "/health" })).status).toBe(200);
+    expect(outbound).toEqual([]);
+  });
+
+  it("is off when MCP_ALLOWED_HOSTS is unset and a secret is configured", async () => {
+    process.env.CONDUIT_S2S_SECRET = S2S_SECRET;
+    process.env.AUTH_MODE = "gateway";
+    const { port } = await listen();
+    const s2s = { "x-gateway-s2s": mintS2sHeader(S2S_SECRET), ...gatewayHeaders };
+    expect(await postWithHost(port, "any-host.example", s2s)).toBe(200);
+  });
+
+  it("defaults to localhost and 127.0.0.1 under MCP_ALLOW_INSECURE_DEV=1, so a rebound page is refused", async () => {
+    process.env.MCP_ALLOW_INSECURE_DEV = "1";
+    process.env.AUTH_MODE = "gateway";
+    const { port } = await listen();
+    expect(await postWithHost(port, `rebind.attacker.example:${port}`, gatewayHeaders)).toBe(403);
+    expect(await postWithHost(port, `127.0.0.1:${port}`, gatewayHeaders)).toBe(200);
+    expect(await postWithHost(port, `localhost:${port}`, gatewayHeaders)).toBe(200);
     expect(outbound).toEqual([]);
   });
 });

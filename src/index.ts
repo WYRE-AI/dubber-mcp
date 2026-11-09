@@ -24,7 +24,9 @@
  * value that is not a known placeholder. MCP_ALLOW_INSECURE_DEV=1 is a
  * local-only escape hatch for an empty secret: it logs a warning, does not
  * enforce X-Gateway-S2S, and listens on 127.0.0.1 only. A configured secret
- * honors MCP_HTTP_HOST (default 0.0.0.0 when unset). /health and /healthz
+ * honors MCP_HTTP_HOST (default 0.0.0.0 when unset). MCP_ALLOWED_HOSTS (optional;
+ * localhost,127.0.0.1 by default under MCP_ALLOW_INSECURE_DEV=1) answers 403 to
+ * any other Host header, before the S2S gate. /health and /healthz
  * stay unauthenticated and do not read credentials. stdio does not use S2S.
  */
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
@@ -198,6 +200,27 @@ function resolveBindHost(s2sSecret: string): string {
   return LOOPBACK_HOST;
 }
 
+/**
+ * Optional Host-header allowlist (MCP_ALLOWED_HOSTS, comma-separated; a port is ignored).
+ * Unset means off, except under MCP_ALLOW_INSECURE_DEV=1, where it defaults to localhost and
+ * 127.0.0.1: with no S2S check, a page that rebinds its DNS to 127.0.0.1 could otherwise call /mcp.
+ */
+function resolveAllowedHosts(insecureDev: boolean): ReadonlySet<string> | null {
+  const entries = (process.env.MCP_ALLOWED_HOSTS ?? "")
+    .split(",")
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean);
+  if (entries.length > 0) return new Set(entries);
+  return insecureDev ? new Set(["localhost", LOOPBACK_HOST]) : null;
+}
+
+function hostAllowed(req: IncomingMessage, allowed: ReadonlySet<string> | null): boolean {
+  if (!allowed) return true;
+  const host = (req.headers.host ?? "").trim().toLowerCase();
+  if (!host) return false;
+  return allowed.has(host) || allowed.has(host.replace(/^\[([^\]]+)\](:\d+)?$/, "$1").replace(/:\d+$/, ""));
+}
+
 /** stdio (default). Fresh server per process; env-mode credentials (none in gateway mode). */
 function startStdioTransport(): void {
   configuredTiers(); // a DUBBER_TOOL_TIERS typo fails here, not on the first call
@@ -236,6 +259,7 @@ export async function startHttpTransport(): Promise<HttpServer> {
   const { authMode, tiers: configured } = resolveStartupConfig();
   const port = parseInt(process.env.MCP_HTTP_PORT || "8080", 10);
   const host = resolveBindHost(s2sSecret);
+  const allowedHosts = resolveAllowedHosts(insecureDev);
   const isGatewayMode = authMode === "gateway";
   // Irreversible: from here on no code path in this process reads DUBBER_* credentials.
   if (isGatewayMode) lockGatewayMode();
@@ -269,6 +293,12 @@ export async function startHttpTransport(): Promise<HttpServer> {
           timestamp: new Date().toISOString(),
         })
       );
+      return;
+    }
+
+    if (!hostAllowed(req, allowedHosts)) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Forbidden: Host header is not in MCP_ALLOWED_HOSTS." }));
       return;
     }
 
