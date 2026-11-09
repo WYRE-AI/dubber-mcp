@@ -8,7 +8,8 @@ import {
   resolveEnvCredentials,
   resolveGatewayCredentials,
 } from "../credentials.js";
-import { makeMcpServerFactory } from "../mcp-server.js";
+import { readFileSync } from "node:fs";
+import { makeMcpServerFactory, SERVER_VERSION } from "../mcp-server.js";
 import { runInRequestScope } from "../request-scope.js";
 
 describe("buildCredentials", () => {
@@ -118,5 +119,12 @@ describe("makeMcpServerFactory", () => {
     const factory = makeMcpServerFactory();
     expect(() => factory({} as never)).not.toThrow();
     expect(() => runInRequestScope({ tiers: new Set() }, () => factory({} as never))).not.toThrow();
+  });
+});
+
+describe("SERVER_VERSION", () => {
+  it("follows package.json (semantic-release bumps it), like the template's version.ts", () => {
+    const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string };
+    expect(SERVER_VERSION).toBe(pkg.version);
   });
 });

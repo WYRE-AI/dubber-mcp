@@ -23,7 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `nextCursor` when Dubber rate-limits after the first page.
 - CI guard against assigning request credentials to `process.env`.
 - Guarded Dubber transport: fixed `https://api.dubber.net` origin, exact-path check on every
-  URL, redirects refused, 4 MiB bounded reads, vendor request ids in errors.
+  URL, GET-only with no body (node-dubber's write methods are refused before any request),
+  redirects refused, 4 MiB bounded reads, vendor request ids in errors.
+- Secrets are also redacted in their JSON-escaped form.
 - Redacting logger and tool output; per-request AsyncLocalStorage credential scope.
 - `npm run lint:destructive`, a stdio leg in `npm run smoke`, `mcp-assert` evals, gitleaks
   scanning, and CODEOWNERS.
@@ -41,11 +43,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `CONDUIT_S2S_SECRET` must be at least 32 characters and not a repeated
   pattern; an unknown `AUTH_MODE` or `DUBBER_TOOL_TIERS` entry refuses to start;
   `AUTH_MODE=env` HTTP refuses to start without `DUBBER_*` credentials.
-- Tokens are reused for half their lifetime (at most until 30 minutes before expiry), and a
+- Tokens are reused for 90% of their lifetime (at most until 30 minutes before expiry), and a
   missing `expires_in` counts as 24 h. Previously any token living under 30 minutes, such as
-  Dubber's 240 s sample token, was minted again on every call.
-- Dubber's 403 rate limits (codes 1021/1022/1024) are reported as rate limits, not as missing
-  access.
+  Dubber's 240 s sample token, was minted again on every call; at half its lifetime it would
+  still have exceeded Dubber's ~500 mints a day under continuous use.
+- Dubber's 403 rate limits (codes 1021/1022/1024, or Mashery's own over-QPS / over-rate 403s
+  identified by `X-Mashery-Error-Code` / `X-Error-Detail-Header`) are reported as rate limits,
+  not as missing access.
+- `/health` and MCP `serverInfo` report the `package.json` version instead of a hardcoded
+  `1.0.0`.
+- `dubber_recordings_get_waveform` says it returns a short-lived pre-signed `waveform_url`;
+  `dubber_recordings_get` no longer claims to return tags.
 - `dubber_recordings_list` scans at most 10 Dubber requests (1,000 recordings) per call, down
   from 25.
 - The access token in use is redacted from tool output and logs.
@@ -64,6 +72,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - `DUBBER_BASE_URL`. The host is always `https://api.dubber.net`.
+- CORS headers (`Access-Control-Allow-Origin: *`) and the pre-auth `OPTIONS` 204. Only Conduit
+  calls this server; an `OPTIONS` request now meets the S2S gate like any other.
 - Every write and admin tool (21): `dubber_groups_create_child`,
   `dubber_groups_create_unidentified_recording`, `dubber_accounts_create`,
   `dubber_accounts_update`, `dubber_recordings_create`, `dubber_recordings_delete`,

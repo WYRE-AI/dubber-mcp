@@ -23,6 +23,7 @@ import { redactText } from "./redact.js";
 import { currentRequestScope } from "./request-scope.js";
 import { toolsForTiers } from "./tools/index.js";
 import { logger } from "./utils/logger.js";
+import { VERSION } from "./version.js";
 
 export {
   buildCredentials,
@@ -34,7 +35,7 @@ export {
 } from "./credentials.js";
 
 export const SERVER_NAME = "dubber-mcp";
-export const SERVER_VERSION = "1.0.0";
+export const SERVER_VERSION = VERSION;
 
 /**
  * The McpServerFactory consumed by both transports. The factory runs once

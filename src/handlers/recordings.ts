@@ -22,7 +22,8 @@ const CONTENT_DISPOSITION_RE = /^(inline|attachment|attachment;filename=[^;\r\n"
 /**
  * Get Recording Link: recording details plus `recording_url`, a pre-signed
  * S3 link to the audio and a bearer secret until it expires. Its own tool so
- * Conduit can enable it separately from plain reads. Returned to the caller
+ * Conduit can filter it by tool name (it shares the `read` tier with plain
+ * reads, so X-Conduit-Tool-Tiers cannot remove it). Returned to the caller
  * only; never logged (the logger strips signed-URL signatures) or cached.
  */
 async function getLink(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {

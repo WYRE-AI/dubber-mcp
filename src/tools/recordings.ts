@@ -80,7 +80,8 @@ export const RECORDINGS_TOOLS: Tool[] = [
   {
     name: "dubber_recordings_get",
     description:
-      "Get a recording's details (metadata, tags, duration) by ID. Does not return an audio link; use " +
+      "Get a recording's details (from/to, call type, channel, status, start/end time, duration) by ID. " +
+      "Does not return an audio link; use " +
       "dubber_recordings_get_link for that.",
     inputSchema: {
       type: "object",
@@ -118,7 +119,9 @@ export const RECORDINGS_TOOLS: Tool[] = [
   },
   {
     name: "dubber_recordings_get_waveform",
-    description: "Get waveform data for a recording, for audio visualization.",
+    description:
+      "Get a recording's waveform: `waveform_url`, a short-lived (about 5 minutes) pre-signed link to the " +
+      "waveform .dat file, for audio visualization. The link is a bearer credential; do not share it.",
     inputSchema: {
       type: "object",
       properties: { recordingId: { type: "string", description: "Dubber recording ID." } },

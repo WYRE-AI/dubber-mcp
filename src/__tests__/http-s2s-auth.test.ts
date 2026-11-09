@@ -574,6 +574,24 @@ describe("HTTP /mcp authentication", () => {
     expect(outbound).toEqual([]);
   });
 
+  it("sends no CORS headers and answers OPTIONS only after the S2S gate", async () => {
+    const server = await listen();
+    const preflight = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: "OPTIONS",
+      headers: { origin: "https://evil.example", "access-control-request-method": "POST" },
+    });
+    expect(preflight.status).toBe(401);
+    const post = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: "POST",
+      headers: mcpHeaders({ origin: "https://evil.example", "x-gateway-s2s": mintS2sHeader(S2S_SECRET), ...gatewayHeaders }),
+      body: toolsList,
+    });
+    expect(post.status).toBe(200);
+    for (const res of [preflight, post]) {
+      for (const name of res.headers.keys()) expect(name).not.toMatch(/^access-control-/);
+    }
+  });
+
   it("serves /health without authentication and without reading credentials", async () => {
     const server = await listen();
     const response = await sendHttp({ port: server.port, path: "/health" });

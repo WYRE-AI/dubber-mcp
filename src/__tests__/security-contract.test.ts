@@ -163,6 +163,26 @@ describe("fixed origin, exact path, path parameters", () => {
   });
 });
 
+describe("the transport is GET-only", () => {
+  it("refuses node-dubber's write methods before any request (no token mint either)", async () => {
+    const api = createDubberApi(CREDS);
+    await expect(api.recordings.delete("x")).rejects.toThrow("Only GET requests");
+    await expect(api.users.delete("u-1")).rejects.toThrow("Only GET requests");
+    expect(sent).toEqual([]);
+  });
+
+  it.each([
+    [{ method: "DELETE" }],
+    [{ method: "POST" }],
+    [{ body: { a: 1 } }],
+  ])("refuses a raw request with %j", async (options) => {
+    await expect(createDubberApi(CREDS).request("/recordings/r-1", options as never)).rejects.toThrow(
+      "Only GET requests"
+    );
+    expect(sent).toEqual([]);
+  });
+});
+
 describe("redirects and response size", () => {
   it("never follows a redirect on an API call", async () => {
     respond = () => new Response(null, { status: 302, headers: { location: "https://evil.example/steal" } });
@@ -211,6 +231,26 @@ describe("error mapping", () => {
     expect(text(result)).not.toContain("lack access");
   });
 
+  it.each([
+    ["ERR_403_DEVELOPER_OVER_QPS", "Over Queries Per Second", "rate limit", "retry in a few seconds"],
+    ["ERR_403_DEVELOPER_OVER_RATE", "Over Rate", "daily rate limit", "used up"],
+    [undefined, "Over Queries Per Second", "rate limit", "retry in a few seconds"],
+  ])("maps Mashery's own 403 (%s, HTML body) to a rate-limit message", async (code, detail, kind, hint) => {
+    respond = () =>
+      new Response("<h1>Developer Over Qps</h1>", {
+        status: 403,
+        headers: {
+          "content-type": "text/html",
+          ...(code ? { "x-mashery-error-code": code } : {}),
+          "x-error-detail-header": detail,
+        },
+      });
+    const result = await handleToolCall(createDubberApi(CREDS), "dubber_accounts_get", { accountId: "acc-1" });
+    expect(text(result)).toContain(kind);
+    expect(text(result)).toContain(hint);
+    expect(text(result)).not.toContain("lack access");
+  });
+
   it("keeps the access hint on a plain 403", async () => {
     respond = () => json({ message: "Forbidden" }, 403);
     const result = await handleToolCall(createDubberApi(CREDS), "dubber_accounts_get", { accountId: "acc-1" });
@@ -228,6 +268,12 @@ describe("redaction", () => {
   it("removes known secrets, bearer tokens and credential-named keys", () => {
     const out = redactText(`echo ${CREDS.clientSecret} Bearer ${ACCESS_TOKEN}`, [CREDS.clientSecret]);
     expect(out).toBe("echo [REDACTED] [REDACTED]");
+  });
+
+  it("removes a known secret that appears JSON-escaped", () => {
+    const secret = 'se"cr\\et-0001';
+    const out = redactText(JSON.stringify({ message: `bad secret ${secret}` }), [secret]);
+    expect(out).toBe(JSON.stringify({ message: "bad secret [REDACTED]" }));
   });
 
   it("strips signed-URL signatures from log lines only", () => {
@@ -339,17 +385,18 @@ describe("token lifetime (Dubber's sample token lives 240 s)", () => {
     expect(sent.filter((s) => s.url.pathname.endsWith("/token"))).toHaveLength(1);
   });
 
-  it("re-mints once the token is past half its lifetime", async () => {
+  it("reuses a 240 s token for 90% of its life (216 s), so continuous use stays under 500 mints a day", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-11-09T00:00:00Z"));
     const api = createDubberApi(CREDS);
     await handleToolCall(api, "dubber_profile_get", {});
-    vi.setSystemTime(new Date("2026-11-09T00:01:50Z"));
+    vi.setSystemTime(new Date("2026-11-09T00:03:30Z"));
     await handleToolCall(api, "dubber_profile_get", {});
     expect(sent.filter((s) => s.url.pathname.endsWith("/token"))).toHaveLength(1);
-    vi.setSystemTime(new Date("2026-11-09T00:02:10Z"));
+    vi.setSystemTime(new Date("2026-11-09T00:03:40Z"));
     await handleToolCall(api, "dubber_profile_get", {});
     expect(sent.filter((s) => s.url.pathname.endsWith("/token"))).toHaveLength(2);
+    expect(Math.ceil(86_400 / 216)).toBeLessThan(500);
   });
 
   it("treats a missing expires_in as Dubber's documented 24 h, not zero", async () => {

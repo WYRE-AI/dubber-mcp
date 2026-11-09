@@ -126,3 +126,16 @@ describe("schemas", () => {
     expect(required("dubber_dub_points_find")).toEqual(["query"]);
   });
 });
+
+describe("descriptions match Dubber's documented responses", () => {
+  it("dubber_recordings_get does not promise tags (Get_Recordings_Details has none)", () => {
+    expect(tool("dubber_recordings_get").description).not.toContain("tags");
+  });
+
+  it("dubber_recordings_get_waveform warns that waveform_url is a short-lived bearer link", () => {
+    const description = tool("dubber_recordings_get_waveform").description ?? "";
+    expect(description).toContain("waveform_url");
+    expect(description).toMatch(/pre-signed/);
+    expect(description).toMatch(/do not share/i);
+  });
+});

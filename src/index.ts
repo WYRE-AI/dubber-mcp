@@ -41,7 +41,6 @@ import {
   type ToolTier,
 } from "./config.js";
 import {
-  GATEWAY_HEADERS,
   REQUIRED_GATEWAY_HEADERS,
   resolveEnvCredentials,
   resolveGatewayCredentials,
@@ -199,15 +198,6 @@ function resolveBindHost(s2sSecret: string): string {
   return LOOPBACK_HOST;
 }
 
-const CORS_ALLOW_HEADERS = [
-  "Content-Type",
-  "Accept",
-  "Authorization",
-  "Mcp-Session-Id",
-  "Mcp-Protocol-Version",
-  ...GATEWAY_HEADERS,
-].join(", ");
-
 /** stdio (default). Fresh server per process; env-mode credentials (none in gateway mode). */
 function startStdioTransport(): void {
   configuredTiers(); // a DUBBER_TOOL_TIERS typo fails here, not on the first call
@@ -258,18 +248,10 @@ export async function startHttpTransport(): Promise<HttpServer> {
     onerror: (error) => logger.error("MCP request adapter error", { error: error.message }),
   });
 
+  // No CORS headers: only Conduit calls this server, server to server. A
+  // browser page must never be able to reach /mcp (e.g. a dev server on
+  // 127.0.0.1 without S2S), so preflights fall through to the S2S gate.
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-    // CORS for claude.ai custom connectors — set on every response, before routing.
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, DELETE");
-    res.setHeader("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS);
-    res.setHeader("Access-Control-Max-Age", "86400");
-    if (req.method === "OPTIONS") {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
-
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
     // Health endpoint — shallow, unauthenticated liveness probe. Must NOT

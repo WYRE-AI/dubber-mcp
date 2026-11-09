@@ -9,23 +9,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import http from "node:http";
 import {
-  GATEWAY_HEADERS,
   REQUIRED_GATEWAY_HEADERS,
   resolveGatewayCredentials,
 } from "../mcp-server.js";
 
 function createGateServer(isGatewayMode: boolean): http.Server {
   return http.createServer((req, res) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader(
-      "Access-Control-Allow-Headers",
-      ["Content-Type", "Accept", "Authorization", "Mcp-Session-Id", ...GATEWAY_HEADERS].join(", ")
-    );
-    if (req.method === "OPTIONS") {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
     const url = new URL(req.url || "/", "http://localhost");
     if (url.pathname === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -145,13 +134,6 @@ describe("gateway-mode HTTP gate", () => {
   it("the complete credential set reaches the MCP handler", async () => {
     const res = await request(port, "/mcp", { method: "POST", headers: FULL_HEADERS });
     expect(res.status).toBe(200);
-  });
-
-  it("CORS allow-headers include all X-Dubber-* names; OPTIONS answers 204", async () => {
-    const res = await request(port, "/mcp", { method: "OPTIONS" });
-    expect(res.status).toBe(204);
-    const allow = String(res.headers["access-control-allow-headers"]);
-    for (const header of GATEWAY_HEADERS) expect(allow).toContain(header);
   });
 
   it("unknown paths 404 with the endpoint listing", async () => {

@@ -4,8 +4,9 @@
  * extra pass: signed-URL signatures (e.g. a recording_url) are stripped,
  * because those links are bearer access to call audio.
  *
- * recording_url itself is NOT redacted from tool output: returning it to the
- * caller is the purpose of dubber_recordings_get with `listener`.
+ * recording_url (and waveform_url) is NOT redacted from tool output:
+ * returning it to the caller is the purpose of dubber_recordings_get_link
+ * (and dubber_recordings_get_waveform).
  */
 
 export const REDACTED = "[REDACTED]";
@@ -46,11 +47,16 @@ const TEXT_PATTERNS: RegExp[] = [
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
 ];
 
-/** Pattern-based redaction plus exact removal of any secrets known for this request. */
+/**
+ * Pattern-based redaction plus exact removal of any secrets known for this
+ * request, both raw and in their JSON-escaped form (tool output and log lines
+ * are JSON-stringified, so a `"` or `\` in a secret appears escaped).
+ */
 export function redactText(text: string, knownSecrets: readonly (string | undefined)[] = []): string {
   let out = text;
   for (const secret of knownSecrets) {
-    if (secret && secret.length >= 4) out = out.split(secret).join(REDACTED);
+    if (!secret || secret.length < 4) continue;
+    for (const form of [secret, JSON.stringify(secret).slice(1, -1)]) out = out.split(form).join(REDACTED);
   }
   for (const pattern of TEXT_PATTERNS) out = out.replace(pattern, REDACTED);
   return out;

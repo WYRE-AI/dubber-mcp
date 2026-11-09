@@ -11,12 +11,16 @@
  * - redirect: "manual", and any 3xx is an error (secrets are never re-sent);
  * - response bodies are bounded while streaming (4 MiB);
  * - vendor errors keep the HTTP status, the vendor message and a request id;
- * - no automatic retries, except one token refresh after a 401.
+ * - no automatic retries, except one token refresh after a 401;
+ * - GET only, with no body: the read-only guarantee lives here, not only in
+ *   the handlers (node-dubber's resources also expose write methods). The
+ *   token mint is the one POST and calls send() directly.
  *
- * Tokens are cached per credential set and reused for the first half of
- * their lifetime (at most until 30 minutes before expiry). Dubber's Getting
- * Started guide caps tokens at about 500 per 24 h and says to store them, so
- * minting per call is not an option, even for its 240 s sample tokens.
+ * Tokens are cached per credential set and reused for 90% of their lifetime
+ * (at most until 30 minutes before expiry). Dubber's Getting Started guide
+ * caps tokens at about 500 per 24 h and says to store them, so minting per
+ * call is not an option: even its 240 s sample token is reused for 216 s,
+ * which keeps continuous use at about 400 mints a day.
  */
 import { createHash } from "node:crypto";
 import {
@@ -38,13 +42,19 @@ import {
 import { DUBBER_ORIGIN, MAX_UPSTREAM_BYTES, REQUEST_TIMEOUT_MS } from "./config.js";
 import { secretsOf, type DubberCredentials } from "./credentials.js";
 
-/** A DubberError that also carries the vendor's request id, when one was sent. */
-export type DubberApiError = DubberError & { requestId?: string };
+/**
+ * A DubberError that also carries the vendor's request id and Mashery's own
+ * rejection reason (X-Mashery-Error-Code / X-Error-Detail-Header), when sent.
+ */
+export type DubberApiError = DubberError & { requestId?: string; masheryError?: string };
 
 /** Response headers that may carry a vendor request id (Mashery fronts the API). */
 const REQUEST_ID_HEADERS = ["x-request-id", "x-mashery-message-id", "x-amzn-requestid"];
 
-/** Refresh margin bounds: half the token's lifetime, but no more than 30 min and no less than 5 s. */
+/** Mashery rejects at its own layer with these headers and an HTML or plain-text body. */
+const MASHERY_ERROR_HEADERS = ["x-mashery-error-code", "x-error-detail-header"];
+
+/** Refresh margin bounds: a tenth of the token's lifetime, but no more than 30 min and no less than 5 s. */
 const MAX_EXPIRY_MARGIN_MS = 30 * 60_000;
 const MIN_EXPIRY_MARGIN_MS = 5_000;
 /** Dubber's documented token lifetime, used when a mint response omits expires_in. */
@@ -141,8 +151,11 @@ function parseBody(text: string): unknown {
 /**
  * Dubber rate-limits with HTTP 403, not 429 (HTTP_Responses: "403 Account
  * Over Rate Limit"; API Error Dictionary: 1021 Queries Per Second Limit,
- * 1022 Account Rate Limit (daily), 1024 Rate Limit Exceeded). "retry" means
- * wait a few seconds; "daily" means the account's daily quota is used up.
+ * 1022 Account Rate Limit (daily), 1024 Rate Limit Exceeded). Mashery, in
+ * front of Dubber, can also answer 403 itself, naming the reason only in
+ * headers (ERR_403_DEVELOPER_OVER_QPS / "Over Queries Per Second", or
+ * ERR_403_DEVELOPER_OVER_RATE / "Over Rate"). "retry" means wait a few
+ * seconds; "daily" means the account's daily quota is used up.
  */
 export type RateLimitKind = { kind: "retry" | "daily"; code?: number };
 
@@ -164,6 +177,9 @@ export function rateLimitOf(error: unknown): RateLimitKind | undefined {
   const code = errorCode(error.response);
   if (code === DAILY_CODE) return { kind: "daily", code };
   if (code !== undefined && RETRY_CODES.has(code)) return { kind: "retry", code };
+  const mashery = (error as DubberApiError).masheryError ?? "";
+  if (/OVER_QPS|Over Queries Per Second/i.test(mashery)) return { kind: "retry" };
+  if (/OVER_RATE|Over Rate/i.test(mashery)) return { kind: "daily" };
   return /rate limit|per second limit/i.test(error.message) ? { kind: "retry" } : undefined;
 }
 
@@ -172,6 +188,8 @@ async function vendorError(res: Response): Promise<DubberApiError> {
   const error: DubberApiError = parseDubberError(res.status, body, res.headers);
   const requestId = REQUEST_ID_HEADERS.map((h) => res.headers.get(h)).find((v) => v);
   if (requestId) error.requestId = requestId;
+  const mashery = MASHERY_ERROR_HEADERS.map((h) => res.headers.get(h)).filter((v) => v);
+  if (mashery.length > 0) error.masheryError = mashery.join(" ");
   return error;
 }
 
@@ -201,7 +219,7 @@ async function mint(creds: DubberCredentials, key: string): Promise<DubberToken>
   }
   const expiresIn = Number(body?.["expires_in"]);
   const lifetimeMs = (Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : DEFAULT_TOKEN_LIFETIME_S) * 1000;
-  const marginMs = Math.max(MIN_EXPIRY_MARGIN_MS, Math.min(MAX_EXPIRY_MARGIN_MS, lifetimeMs / 2));
+  const marginMs = Math.max(MIN_EXPIRY_MARGIN_MS, Math.min(MAX_EXPIRY_MARGIN_MS, lifetimeMs / 10));
   // expiresAt here is when this server stops reusing the token, not Dubber's hard expiry.
   const token: DubberToken = { accessToken, expiresAt: Date.now() + lifetimeMs - marginMs };
   tokenCache.set(key, token);
@@ -230,27 +248,27 @@ export function secretsInUse(creds: DubberCredentials | undefined): string[] {
 
 /**
  * The subset of node-dubber's HttpClient that its resource classes call.
- * Only JSON GET-style requests are supported: RequestOptions.headers is
- * ignored and responseType "binary" is refused, so a future audio download
- * tool (recordings.download sends Accept: audio/*) needs both added here.
+ * Only JSON GET requests without a body are allowed, so node-dubber's write
+ * methods (recordings.delete, users.delete, ...) fail here before any
+ * request. RequestOptions.headers is ignored and responseType "binary" is
+ * refused, so a future audio download tool (recordings.download sends
+ * Accept: audio/*) needs both added here.
  */
 class GuardedHttp {
   constructor(private readonly creds: DubberCredentials) {}
 
   async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
     const { method = "GET", params, body, responseType = "json" } = options;
+    if (method !== "GET" || body !== undefined) {
+      throw new DubberError(`Only GET requests without a body reach the Dubber API; refused ${method} ${path}.`, 0, undefined);
+    }
     if (responseType !== "json") throw new DubberError("Binary Dubber responses are not supported.", 0, undefined);
     const url = buildUrl(this.creds, path, params);
     for (let attempt = 0; ; attempt++) {
       const token = await getToken(this.creds);
       const res = await send(url, {
-        method,
-        headers: {
-          Accept: "application/json",
-          ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-          Authorization: `Bearer ${token.accessToken}`,
-        },
-        body: body !== undefined ? JSON.stringify(body) : undefined,
+        method: "GET",
+        headers: { Accept: "application/json", Authorization: `Bearer ${token.accessToken}` },
       });
       if (res.status === 401 && attempt === 0) {
         // The cached token may have been revoked or expired early: mint once more.
