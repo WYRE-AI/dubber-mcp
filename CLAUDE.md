@@ -71,14 +71,44 @@ decisions: `docs/DESIGN.md`.
   logger to see that request's credentials; the http-s2s-auth test proves header creds
   reach the token mint.
 - **Conduit derives tiers from annotations** (`destructiveHint` → admin, `readOnlyHint` →
-  read, else write; `src/access/first-party-default.test.ts`). `toolTier()` mirrors that
-  rule so the sidecar and Conduit can't disagree. Changing
-  `dubber_recordings_get_upload_target` to write tier makes Conduit's
-  `tool-naming-exceptions.ts` entry for it (which says "a read") stale; update it in the
-  Conduit repin PR.
-- **Default tiers are now `read`** (16 tools). Conduit's
-  `tests/mcp/manifests/container-tools.json` lists all 37; the repin PR must either set
-  `DUBBER_TOOL_TIERS=read,write,admin` on the container or update the manifest.
+  read, else write; `src/access/first-party-default.test.ts`). Superseded the same day: the
+  server is now read-only (see the next entry), so every tool is `read`.
 - **The reusable release workflow supplies an `npmrc` BuildKit secret** (style 3 in
   `mcp-server-release.yml`), so the Dockerfile mounts it instead of taking a
   `GITHUB_TOKEN` build arg; no workflow change was needed.
+
+## Learnings - 2026-11-09 (review fixes)
+
+- **The server is read-only, per the fleet template contract.** All 21 write/admin tools are
+  deleted (not just hidden behind `DUBBER_TOOL_TIERS`), `ALL_TIERS = ["read"]`, and
+  `DUBBER_TOOL_TIERS=write` refuses to start. Most of those tools were wrong against Dubber's
+  docs anyway (`notifications_create` sent `url`/`event` instead of `post_url`/`event_type`;
+  `accounts_create` sent `group_id`/`timezone` instead of `group`/`time_zone`; `users_create`
+  sent an undocumented `name`; the multipart upload sent `{}` to `complete_upload`). If writes
+  come back, build them from the official samples with fetch-level tests, as separate PRs.
+- **Conduit follow-up before any repin (prod pins v1.0.1, 37 tools):** in the Conduit repo,
+  update `tests/mcp/manifests/container-tools.json` (16 tools, including the new
+  `dubber_recordings_get_link` and `dubber_groups_list_unidentified_dub_points`), prune the
+  dubber write/admin rows and the renamed/removed read rows in
+  `src/proxy/result-cache.ts` (~4172-4214), and drop the dubber entries in
+  `src/access/tool-naming-exceptions.ts` (~1260-1265). Do not move PR #2248 to this image
+  without that.
+- **Dubber's sample token lives 240 s** (Authorization_by_Password). A fixed 30-minute refresh
+  margin meant every call minted, against a ~500 tokens/24 h cap. The margin is now
+  half the lifetime (≤30 min, ≥5 s) and a missing `expires_in` means 24 h. Test fixtures use
+  240, not 86400, so this can't hide again.
+- **Dubber rate-limits with 403, not 429** (codes 1021 QPS, 1022 daily, 1024; or an "Over
+  Rate Limit" message). `rateLimitOf()` in `dubber-api.ts` classifies them; without it the
+  error read as a permissions problem.
+- **Endpoints node-dubber 1.1.0 gets wrong or lacks**: `groups.listUnidentifiedRecordings`
+  calls an undocumented path (the real one is `/groups/:id/unidentified_dub_points`), and
+  `users.list` sends no `count`/`page` (Dubber defaults to 20). Both go through
+  `DubberApi.request` (the guarded transport) instead. `notifications.listUnclaimed` releases
+  held messages, so it is not exposed at all.
+- **`dubber_recordings_get_link` is its own tool** so Conduit can disable audio links without
+  disabling reads. `listener` is attributed by Dubber; the description says to pass only the
+  requester's own email. Not live-verified whether Dubber writes an audit event for it.
+- **The fleet's reusable `mcp-server-ci.yml` does not fit this repo yet**: its docker-smoke
+  npmrc maps only `@wyre-technology`, and the Dockerfile mounts that file over `/app/.npmrc`,
+  so `@wyre-ai/node-dubber` would not resolve; it also runs `npm ci` without
+  `--ignore-scripts`. `ci.yml` copies its process.env credential-mutation guard instead.

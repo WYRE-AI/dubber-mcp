@@ -9,10 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `dubber_recordings_get` takes optional `listener` and `contentDisposition` and returns
-  Dubber's pre-signed `recording_url` (WYREAI-567 item 2). The link is never logged or cached.
-- Tool tiers (`read`, `write`, `admin`) derived from tool annotations, selected with
-  `DUBBER_TOOL_TIERS` and narrowed per request by Conduit's `X-Conduit-Tool-Tiers` header.
+- `dubber_recordings_get_link` returns Dubber's pre-signed `recording_url` for a required
+  `listener` (WYREAI-567 item 2), with optional `contentDisposition`. The link is never logged
+  or cached.
+- `dubber_groups_list_unidentified_dub_points` (Dubber's documented
+  `GET /groups/:id/unidentified_dub_points`).
+- `dubber_users_list` takes `count`/`page`; `dubber_dub_points_list` takes `userId`/`count`/`page`.
+  Both report `hasMore` when a full page comes back, instead of silently stopping at Dubber's
+  default 20.
+- `DUBBER_TOOL_TIERS` (only `read` is valid) and an optional `X-Conduit-Tool-Tiers` header that
+  can only narrow (not yet sent by Conduit).
+- `dubber_recordings_list` returns what it read plus `rateLimited: true` and a resumable
+  `nextCursor` when Dubber rate-limits after the first page.
+- CI guard against assigning request credentials to `process.env`.
 - Guarded Dubber transport: fixed `https://api.dubber.net` origin, exact-path check on every
   URL, redirects refused, 4 MiB bounded reads, vendor request ids in errors.
 - Redacting logger and tool output; per-request AsyncLocalStorage credential scope.
@@ -21,13 +30,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Breaking:** the default tool surface is the 16 read tools. Set
-  `DUBBER_TOOL_TIERS=read,write,admin` for all 37.
+- **Breaking:** the server is read-only: 16 tools, all `readOnlyHint: true`.
+  `DUBBER_TOOL_TIERS` values other than `read` refuse to start.
+- **Breaking:** `dubber_recordings_get` no longer takes `listener`; use
+  `dubber_recordings_get_link`.
+- **Breaking:** `dubber_dub_points_find` accepts only `external_type`, `service_provider`,
+  `external_group` and `external_identifier`.
+- **Breaking:** a blank or repeated `X-Dubber-Region` header is a 401 instead of defaulting to
+  `sandbox`.
 - **Breaking:** `CONDUIT_S2S_SECRET` must be at least 32 characters and not a repeated
   pattern; an unknown `AUTH_MODE` or `DUBBER_TOOL_TIERS` entry refuses to start;
   `AUTH_MODE=env` HTTP refuses to start without `DUBBER_*` credentials.
-- `dubber_recordings_get_upload_target` is now write tier (`readOnlyHint: false`): its
-  result grants upload access.
+- Tokens are reused for half their lifetime (at most until 30 minutes before expiry), and a
+  missing `expires_in` counts as 24 h. Previously any token living under 30 minutes, such as
+  Dubber's 240 s sample token, was minted again on every call.
+- Dubber's 403 rate limits (codes 1021/1022/1024) are reported as rate limits, not as missing
+  access.
+- `dubber_recordings_list` scans at most 10 Dubber requests (1,000 recordings) per call, down
+  from 25.
+- The access token in use is redacted from tool output and logs.
+- `CONDUIT_S2S_SECRET` values starting `s2s-test` refuse to start; the tests generate their
+  secret per run instead of committing one.
 - `X-Dubber-Region` / `DUBBER_REGION` must be `sandbox`, `us`, `au`, `eu`, or `uk`.
 - Path IDs containing `.`/`..`, separators, encoded separators or control characters are
   rejected before any request.
@@ -41,5 +64,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - `DUBBER_BASE_URL`. The host is always `https://api.dubber.net`.
+- Every write and admin tool (21): `dubber_groups_create_child`,
+  `dubber_groups_create_unidentified_recording`, `dubber_accounts_create`,
+  `dubber_accounts_update`, `dubber_recordings_create`, `dubber_recordings_delete`,
+  `dubber_recordings_update_metadata`, `dubber_recordings_add_tags`,
+  `dubber_recordings_delete_tags`, `dubber_recordings_initiate_multipart_upload`,
+  `dubber_recordings_get_upload_target`, `dubber_recordings_complete_upload`,
+  `dubber_users_create`, `dubber_users_update`, `dubber_users_delete`,
+  `dubber_notifications_create`, `dubber_notifications_update`,
+  `dubber_notifications_activate`, `dubber_notifications_delete`, `dubber_dub_points_create`,
+  `dubber_oauth_revoke_token`; and destructive-action elicitation with them.
+- `dubber_notifications_list_unclaimed`: Dubber's endpoint releases held messages, so it is
+  not a read.
+- `dubber_groups_list_unidentified_recordings`: it called an undocumented endpoint; replaced by
+  `dubber_groups_list_unidentified_dub_points`.
+- The undocumented `query` input on `dubber_recordings_list`.
 
 Entries below this line are written by semantic-release from commit history.

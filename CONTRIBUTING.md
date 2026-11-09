@@ -25,20 +25,20 @@ if code and design disagree, fix one of them in the same PR.
 
 - **Stateless tool surface**: `tools/list` must return the same tools in the same order for
   every caller with the same tiers. No sessions, no per-user variance, no runtime sorting.
-  Only `DUBBER_TOOL_TIERS` and `X-Conduit-Tool-Tiers` (narrow-only) choose the tiers.
+  `read` is the only tier; an empty `X-Conduit-Tool-Tiers` header means no tools.
 - **Never `legacy: 'reject'`** on `createMcpHandler`: it turns away every 2025-era client.
 - **401 gate before the handler** in gateway mode; never fall through to env credentials.
 - **No base URL at all.** The origin is `https://api.dubber.net`; the region is allowlisted.
 - **Every Dubber request goes through `src/dubber-api.ts`** (exact-path check, no
   redirects, bounded reads). Never call the SDK's `DubberClient` or `fetch` directly.
 - **Path IDs use `requireId`**, never `requireString`.
-- **Read tools are truly read-only**: only GETs (plus the token mint). A tool whose result
-  grants write access (e.g. an upload URL) is write tier even if it is a GET.
-- **MRTR safety**: every read and elicitation happens before the single mutating Dubber call.
+- **Read-only server.** Every tool is `readOnlyHint: true` and sends only GETs (plus the
+  token mint); `security-contract.test.ts` asserts each tool's exact method, path and query.
+  Do not add a tool that changes Dubber state, or whose result grants write access (e.g. an
+  upload URL), or an endpoint with side effects on GET (e.g. releasing unclaimed
+  notifications).
 - Every handler returns `isError` results and never throws; empty results are `isError`
   with an explicit "no X found" message.
-- Gated tools carry the description warning prefix, `CONFIRM_ARG_PROPERTY`, and end with
-  "Confirm with the user before invoking."
 - `/health` stays shallow and unauthenticated. Logs never contain tool arguments, results
   or credentials.
 

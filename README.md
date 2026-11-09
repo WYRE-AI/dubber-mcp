@@ -1,8 +1,8 @@
 # dubber-mcp
 
-MCP server for [Dubber](https://developer.dubber.net/) — call recording upload/retrieval,
-compliance metadata and tags, group/account/user management, REST-hook (webhook)
-notifications, and Dub.Point telecom-system (e.g. BroadWorks) integration.
+Read-only MCP server for [Dubber](https://developer.dubber.net/): call recordings and their
+audio links, groups, accounts, users, REST-hook (webhook) subscriptions, and Dub.Point
+telecom-system (e.g. BroadWorks) recording sources. No tool changes anything in Dubber.
 
 Built on the MCP **2026-07-28** spec via the split v2 SDK
 (`@modelcontextprotocol/server` / `/node` / `/client` `^2.0.0-beta.5`) with **dual-era
@@ -13,49 +13,34 @@ Ships as a GHCR container only (no MCPB bundle). Endpoint paths come from
 [`@wyre-ai/node-dubber`](https://github.com/WYRE-AI/node-dubber); every request goes
 through this server's own guarded transport (see [Security](#security)).
 
-## Tool tiers
+## Read-only
 
-Each tool has a tier, derived from its annotations the same way Conduit derives it:
-`destructiveHint` → `admin`, `readOnlyHint` → `read`, anything else → `write`.
+Every tool is annotated `readOnlyHint: true` and sends only `GET` requests (plus the token
+mint); the tests assert each tool's exact request. `read` is the only tool tier, so
+`DUBBER_TOOL_TIERS` accepts only `read` and anything else refuses to start. An
+`X-Conduit-Tool-Tiers` request header can only narrow (an empty header means no tools); Conduit
+does not send it yet.
 
-| `DUBBER_TOOL_TIERS` | Tools |
-|---|---|
-| `read` (default, and the image default) | 16 read-only tools |
-| `read,write` | 32 |
-| `read,write,admin` | all 37 |
-
-Conduit's `X-Conduit-Tool-Tiers` request header can only narrow this set. An empty header
-means no tools. A tool outside the enabled tiers is answered as `Unknown tool`.
-
-`dubber_recordings_get_upload_target` is a GET, but its result is a credential to upload
-audio, so it is `write` tier.
-
-## Tools (37, flat)
+## Tools (16, flat)
 
 - **Core**: `dubber_test_connection`.
-- **Groups**: `dubber_groups_get`, `dubber_groups_create_child`,
-  `dubber_groups_list_unidentified_recordings`, `dubber_groups_create_unidentified_recording`.
-- **Accounts**: `dubber_accounts_create`, `dubber_accounts_get`, `dubber_accounts_update`.
-- **Recordings**: `dubber_recordings_list`, `dubber_recordings_create`, `dubber_recordings_get`,
-  `dubber_recordings_get_waveform`, `dubber_recordings_update_metadata`,
-  `dubber_recordings_add_tags`, `dubber_recordings_initiate_multipart_upload`,
-  `dubber_recordings_get_upload_target`, `dubber_recordings_complete_upload`.
-  Gated: `dubber_recordings_delete` (⚠ DESTRUCTIVE), `dubber_recordings_delete_tags`
-  (⚠ HIGH-IMPACT).
-  `dubber_recordings_list` lists newest first with `limit` (1–500, default 100), `offset`,
-  `cursor`, `query`, `dubPointId`/`teamId`, and a `start_time` window — see
-  [Listing recordings](#listing-recordings-and-time-windows).
-  `dubber_recordings_get` returns a recording link when given `listener` — see
-  [Recording links](#recording-links).
-- **Users**: `dubber_users_list`, `dubber_users_create`, `dubber_users_get`,
-  `dubber_users_update`. Gated: `dubber_users_delete` (⚠ DESTRUCTIVE).
+- **Groups**: `dubber_groups_get`, `dubber_groups_list_unidentified_dub_points` (needs a
+  group-level API token).
+- **Accounts**: `dubber_accounts_get`.
+- **Recordings**: `dubber_recordings_list` (newest first with `limit` 1–500, `offset`,
+  `cursor`, `dubPointId`/`teamId`, and a `start_time` window — see
+  [Listing recordings](#listing-recordings-and-time-windows)), `dubber_recordings_get`,
+  `dubber_recordings_get_link` (signed audio link — see [Recording links](#recording-links)),
+  `dubber_recordings_get_waveform`.
+- **Users**: `dubber_users_list` (one page: `count` 1–100, `page`), `dubber_users_get`.
 - **Profile**: `dubber_profile_get`.
-- **Notifications** (REST hooks): `dubber_notifications_list`, `dubber_notifications_create`,
-  `dubber_notifications_get`, `dubber_notifications_update`, `dubber_notifications_activate`,
-  `dubber_notifications_list_unclaimed`. Gated: `dubber_notifications_delete` (⚠ HIGH-IMPACT).
-- **Dub.Point**: `dubber_dub_points_list`, `dubber_dub_points_create`, `dubber_dub_points_get`,
-  `dubber_dub_points_find`.
-- **OAuth**: gated `dubber_oauth_revoke_token` (⚠ HIGH-IMPACT).
+- **Notifications** (REST hooks): `dubber_notifications_list`, `dubber_notifications_get`.
+- **Dub.Point**: `dubber_dub_points_list` (one page, optional `userId`), `dubber_dub_points_get`,
+  `dubber_dub_points_find` (`external_type`, `service_provider`, `external_group`,
+  `external_identifier`).
+
+List tools that page (`users`, `dub_points`) return `{ <items>, returned, count, page, hasMore }`;
+`hasMore` is true when a full page came back.
 
 ## Credentials
 
@@ -73,7 +58,8 @@ There is no base-URL setting: the host is always `https://api.dubber.net`, and a
 region value is rejected (a `401` in gateway mode). In gateway mode a request missing any of
 the four required headers is answered `401` (JSON-RPC error `-32001`) before the MCP handler
 runs. Gateway mode never reads `DUBBER_*` from the environment. Blank or repeated header
-values count as missing.
+values count as missing; a blank or repeated `X-Dubber-Region` is also a `401` (only an absent
+one defaults to `sandbox`).
 
 `/health` and `/healthz` stay unauthenticated and do not read credentials. The stdio
 transport does not use `CONDUIT_S2S_SECRET`.
@@ -85,7 +71,7 @@ transport does not use `CONDUIT_S2S_SECRET`.
 | `MCP_HTTP_HOST` | No | Bind address when a real `CONDUIT_S2S_SECRET` is set. Unset keeps `0.0.0.0`, the historical container bind. The image and Compose set `0.0.0.0` inside the container. |
 | `MCP_HTTP_PORT` | No | HTTP port. Defaults to `8080`. |
 | `AUTH_MODE` | No | `gateway` (Docker image and Compose) or `env`. Gateway mode requires the four `X-Dubber-*` credential headers on each `/mcp` request and never falls back to `DUBBER_*`. `env` uses those variables only after S2S auth succeeds, and HTTP refuses to start in `env` mode without them. Unset means `env` (stdio and single-tenant HTTP outside the image). Any other value refuses to start. |
-| `DUBBER_TOOL_TIERS` | No | Comma-separated tiers: `read` (default), `write`, `admin`. See [Tool tiers](#tool-tiers). An unknown entry refuses to start. |
+| `DUBBER_TOOL_TIERS` | No | `read` (the default and only tier). See [Read-only](#read-only). Any other entry refuses to start. |
 
 ### HTTP authentication
 
@@ -166,23 +152,12 @@ docker run \
   dubber-mcp
 ```
 
-## Elicitation and destructive-action consent
-
-Every gated tool asks before acting. Elicitation rides the SDK v2 MRTR seam: handlers
-return `input_required` results that 2026-07-28 clients fulfil and retry, and that the
-SDK's legacy shim fulfils server-side for 2025-era stateful connections (stdio). All reads
-and the confirmation happen before the single mutating Dubber call.
-
-Callers that cannot be prompted (including stateless legacy HTTP requests, which is how the
-WYRE Conduit gateway connects) fail closed: gated tools refuse to run unless the call passes
-`"confirm_destructive_action": true`. That argument is consulted only when no prompt is
-possible and never skips a confirmation an interactive user would have seen.
-
 ## Listing recordings and time windows
 
-Dubber's recordings endpoint has only `count` (max 100), `page` (max 5 pages), a `before_id`
-cursor and `query` — no `limit`/`offset` and no date filter, and it silently ignores unknown
-params. `dubber_recordings_list` therefore pages Dubber itself (`count=100`, chaining
+Dubber's recordings endpoint documents only `count` (max 100), `page`, a `before_id` cursor,
+`dub_point` and `team` — no `limit`/`offset`, no date filter and no search, and it silently
+ignores unknown params (so this server offers no `query` input: an ignored filter would
+quietly return every recording). `dubber_recordings_list` therefore pages Dubber itself (`count=100`, chaining
 `before_id`) and applies the rest server-side:
 
 - `limit` (1–500, default 100): max matching recordings returned. `offset` (≥0): matching
@@ -198,24 +173,27 @@ params. `dubber_recordings_list` therefore pages Dubber itself (`count=100`, cha
   recordings: for one technician's week, find their dub point id(s) with `dubber_dub_points_list`
   (each dub point's `user` is a URL ending in `/users/<USER_ID>`), then call once per dub point.
   A `cursor` must be reused with the SAME `dubPointId`/`teamId`.
-- Each call makes at most 25 Dubber requests (2,500 recordings scanned). If that cap or
-  `limit` stops the scan early, `hasMore` is true and `nextCursor` is set: call again with
-  `cursor=<nextCursor>`, `offset=<remainingOffset>` (0 unless the scan cap hit while still
-  skipping) and the same filters to continue with no gaps or duplicates.
-  `scanCapReached` says whether the cap was the reason. With `startTimeFrom` set, the scan
+- Each call makes at most 10 Dubber requests (1,000 recordings scanned). If that cap,
+  `limit`, or Dubber's rate limit stops the scan early, `hasMore` is true and `nextCursor` is
+  set: call again with `cursor=<nextCursor>`, `offset=<remainingOffset>` (0 unless the scan
+  stopped while still skipping) and the same filters to continue with no gaps or duplicates.
+  `scanCapReached` says the cap was the reason; `rateLimited` says a rate limit was (wait a few
+  seconds first). A rate limit on the first page is an error. With `startTimeFrom` set, the scan
   stops once a whole page of recordings starts before it.
 - Result: `{ recordings, returned, hasMore, nextCursor, remainingOffset, scanned, requests, scanCapReached,
-  filters, note }`.
+  rateLimited?, filters, note }`.
 
 ## Recording links
 
-`dubber_recordings_get` takes two optional inputs from Dubber's Get Recording Link endpoint:
+`dubber_recordings_get_link` calls Dubber's Get Recording Link and returns the recording plus
+`recording_url`, a pre-signed link to the MP3. It is its own tool, separate from
+`dubber_recordings_get`, so the gateway can enable plain reads without audio links.
 
-- `listener`: the email of a Dubber user who can access the recording. With it, the response
-  also carries `recording_url`, a pre-signed link to the MP3. Dubber rejects a listener
-  without access. This server never defaults or invents a listener.
-- `contentDisposition`: `inline`, `attachment`, or `attachment;filename=<name>.mp3` (mp3
-  only). It requires `listener`.
+- `listener` (required): the email of the Dubber user who will listen. Dubber checks that this
+  user can access the recording and may attribute the access to them in its audit trail, so it
+  must be the person who asked, never someone else. This server never defaults or invents one.
+- `contentDisposition` (optional): `inline`, `attachment`, or `attachment;filename=<name>.mp3`
+  (mp3 only).
 
 `recording_url` is a bearer secret: anyone holding it can download the call audio until it
 expires (its `Expires` query parameter is a Unix timestamp). This server returns it to the
@@ -232,14 +210,18 @@ The fleet template contract, as implemented here:
 - **No redirects.** `redirect: "manual"`; any 3xx is an error, including on the token mint
   that carries the client secret.
 - **Bounded reads.** Response bodies are capped at 4 MiB while streaming.
-- **Errors** keep the HTTP status, Dubber's message (capped), a retry hint on 429, and the
-  vendor request id when one is sent.
+- **Errors** keep the HTTP status, Dubber's message (capped), and the vendor request id when
+  one is sent. Dubber rate-limits with `403` (error codes 1021/1024: retry in a few seconds;
+  1022: the account's daily quota is used up), which is reported as a rate limit, not as missing
+  access.
 - **Redaction.** Tool output is redacted by credential key names and by exact match on the
-  credentials in use. Every log line is redacted for the S2S secret, env and per-request
-  credentials, bearer tokens, and signed-URL signatures. Logs carry tool names, status and
+  credentials and access token in use. Every log line is redacted for the S2S secret, env and
+  per-request credentials and their access token, bearer tokens, and signed-URL signatures. Logs carry tool names, status and
   request ids only, never arguments or results.
-- **Tokens** are cached per credential set for their lifetime (Dubber allows about 500 calls
-  per token per 24 h). After a 401, the server mints once more; nothing else is retried.
+- **Tokens** are cached per credential set and reused for the first half of their lifetime
+  (at most until 30 minutes before expiry; a missing `expires_in` counts as Dubber's documented
+  24 h). Dubber caps tokens at about 500 per 24 h and its sample token lives 240 s, so minting
+  per call is not an option. After a 401, the server mints once more; nothing else is retried.
 - **Per-request scope.** In gateway mode the X-Dubber-* credentials and the effective tiers
   live in an AsyncLocalStorage scope for exactly one request.
 

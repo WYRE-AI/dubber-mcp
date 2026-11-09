@@ -2,53 +2,44 @@
 
 ## 1. Scope
 
-### 1.1 What shipped in v1
+### 1.1 What ships
 
-A flat, 37-tool MCP surface over the Dubber API Store's call-recording and
-compliance platform, spanning every documented endpoint category:
+A flat, read-only, 16-tool MCP surface over the Dubber API Store's call-recording
+platform. Every tool is `readOnlyHint: true` and sends only GETs; `read` is the only tier.
 
-- **Groups** (4 tools): hierarchy navigation, child-group creation, and
-  group-scoped unidentified/unclaimed recordings.
-- **Accounts** (3 tools): create/get/update.
-- **Recordings** (11 tools): list/create/get/delete, metadata, tags
-  (add/remove), waveform, and the full multipart-upload flow
-  (initiate/get-upload-target/complete) for large audio files.
-- **Users** (5 tools): list/create/get/update/delete on an account.
-- **Profile** (1 tool): the authenticated user/application's own profile.
-- **Notifications** (7 tools): REST-hook (webhook) subscription
-  create/list/get/update/activate/delete, plus unclaimed-event listing.
-- **Dub.Point** (4 tools): telecom-system (e.g. BroadWorks) connection
-  create/list/get/find.
-- **OAuth** (1 tool): token revocation.
-- **Core** (1 tool): `dubber_test_connection`.
+- **Core** (1): `dubber_test_connection`.
+- **Groups** (2): `dubber_groups_get`, `dubber_groups_list_unidentified_dub_points`
+  (`GET /groups/:id/unidentified_dub_points`, response key `unidentified_dub_points`; Dubber
+  requires a group-level token).
+- **Accounts** (1): `dubber_accounts_get`.
+- **Recordings** (4): `dubber_recordings_list`, `dubber_recordings_get`,
+  `dubber_recordings_get_link`, `dubber_recordings_get_waveform`.
+- **Users** (2): `dubber_users_list` (one page: `count` ≤100, `page`), `dubber_users_get`.
+- **Profile** (1): `dubber_profile_get`.
+- **Notifications** (2): `dubber_notifications_list`, `dubber_notifications_get`.
+- **Dub.Point** (3): `dubber_dub_points_list` (one page, optional `user`),
+  `dubber_dub_points_get`, `dubber_dub_points_find` (the four documented lookup keys only).
 
-37 tools is above the "flat, no router" rule-of-thumb (≤~25) the fleet's
-`mcp-vendor-scaffolding` skill suggests, but it's a suggestion, not a hard
-cutoff — kept flat anyway for a simpler client experience rather than adding
-router indirection, since the category boundaries above are already clean
-enough that a router wouldn't meaningfully reduce per-call cognitive load.
+### 1.2 What does NOT ship, and why
 
-### 1.2 What did NOT ship, and why
-
-- **Group-scoped notifications** (`POST/GET /groups/:group_id/notifications`,
-  documented alongside the account-scoped variant). Only the account-scoped
-  half shipped — the two are functionally identical REST-hook operations at
-  a different scope, and covering both would have doubled the notification
-  tool count for a scope variant that's likely rarer in practice. Add
-  `dubber_notifications_list_by_group` / `..._create_by_group` if a real
-  workflow needs it.
-- **A dedicated recording-download-as-binary tool.** The SDK
-  (`client.recordings.download()`) supports it — `GET /recordings/:id`
-  content-negotiated to raw audio — but no MCP tool exposes it yet, since
-  MCP tool results are JSON/text by convention here and this repo doesn't
-  yet have a pattern (matching kpn-mcp's PDF-invoice precedent:
-  `{ type: "resource", resource: { uri, mimeType, blob } }`) proven against
-  a live Dubber account. Wire it once verified.
-- **OAuth client_credentials / authorization_code grants.** The interactive
-  `/io-docs` console lists them as options, but the official Getting Started
-  Guide (support.dubber.net) only documents the password grant (Mashery
-  key/secret as `client_id`/`client_secret`, Dubber Auth ID/Token as
-  `username`/`password`). Only the documented, verified grant shipped.
+- **Every write and admin tool** (21 in v1.0.x: create/update/delete for accounts, users,
+  recordings, tags, metadata, notifications and dub points; child groups; the multipart
+  upload flow; token revocation). This server follows the fleet's read-only template
+  contract: with no write code compiled in, no setting can turn writes on and a
+  prompt-injected caller cannot, for example, subscribe a webhook to an account's recording
+  events. A review against Dubber's docs also found most of them sent the wrong fields
+  (`notifications_create`, `accounts_create`, `users_create`), hit an undocumented endpoint
+  (`groups_create_unidentified_recording`), or could not complete (the multipart upload).
+- **`dubber_notifications_list_unclaimed`.** `GET /notifications/:id/unclaimed` answers
+  `unclaimed_messages_released: N`, i.e. it re-queues held messages: a side effect, so not a
+  read.
+- **`query` on `dubber_recordings_list`.** Get_Account_Recordings does not document it;
+  Dubber ignores unknown params, so a "filtered" call could quietly return everything.
+- **A recording-download-as-binary tool.** `GuardedHttp` refuses binary responses and ignores
+  per-request headers; wire both (and a resource result) before exposing
+  `recordings.download()`.
+- **Group-scoped notifications** and **OAuth client_credentials / authorization_code
+  grants**: not needed for the read surface; only the documented password grant is used.
 
 ## 2. Credentials
 
@@ -61,7 +52,8 @@ Four values, all required:
 | Dubber Auth ID | Dubber portal → API tab | `X-Dubber-Auth-Id` | `DUBBER_AUTH_ID` |
 | Dubber Auth Token | Dubber portal → API tab | `X-Dubber-Auth-Token` | `DUBBER_AUTH_TOKEN` |
 
-Optional: `region` (`X-Dubber-Region` / `DUBBER_REGION`, default `sandbox`) —
+Optional: `region` (`X-Dubber-Region` / `DUBBER_REGION`, default `sandbox` only when absent;
+a blank or repeated header is a 401) —
 selects the path segment in `https://api.dubber.net/<region>/v1` and must be
 one of `sandbox`, `us`, `au`, `eu`, `uk` (Conduit's `DUBBER_VALID_REGIONS`).
 There is no base-URL input of any kind: the origin is a constant.
@@ -74,16 +66,16 @@ Dubber: fixed origin plus an exact-path check on every built URL,
 `redirect: "manual"` with every 3xx refused (including the token mint, whose
 body carries the client secret), 4 MiB bounded reads, vendor request ids on
 errors, no automatic retries except one re-mint after a 401, and a
-per-credential token cache (Dubber allows ~500 calls per token per 24 h).
+per-credential token cache (Dubber caps tokens at ~500 per 24 h). A token is reused for
+half its lifetime (≤30 min margin, ≥5 s; no `expires_in` = 24 h), so Dubber's 240 s sample
+tokens are minted at most every 2 minutes, not per call. Dubber's 403 rate limits (codes
+1021/1022/1024) are reported as rate limits, not access errors.
 Path IDs are validated in the handlers (`requireId`) before node-dubber
 percent-encodes them.
 
-Tool tiers (`read` / `write` / `admin`) are derived from annotations the way
-Conduit derives them (destructiveHint → admin, readOnlyHint → read, else
-write). `DUBBER_TOOL_TIERS` defaults to `read` (16 tools);
-`read,write,admin` enables all 37. `X-Conduit-Tool-Tiers` can only narrow,
-and an empty header means zero tools. `dubber_recordings_get_upload_target`
-is a GET but write tier: its result is a credential to upload audio.
+`read` is the only tool tier. `DUBBER_TOOL_TIERS` accepts only `read` (anything else
+refuses to start). `X-Conduit-Tool-Tiers` can only narrow, and an empty header means zero
+tools; Conduit does not send it yet.
 
 Unlike kpn-mcp's dual-realm (gateway + MSM) credential shape, Dubber has one
 token realm and one credential set — no optional/paired-fallback logic
@@ -101,13 +93,13 @@ constraint. See `node-dubber`'s `src/auth.ts` for the full rationale.
 
 ### Recordings list paging (WYREAI-567)
 
-`GET /accounts/:id/recordings` supports only `count` (≤100), `page` (≤5 pages), `before_id`,
-`after_id`, `query`, `dub_point`, `team`; it has no limit/offset and no date filter, and
-ignores unknown params. `dubber_recordings_list` (name unchanged) keeps `limit` (≤500,
+`GET /accounts/:id/recordings` documents only `count` (≤100), `page`, `before_id`,
+`dub_point`, `team`; it has no limit/offset, no date filter and no search, and ignores
+unknown params. `dubber_recordings_list` (name unchanged) keeps `limit` (≤500,
 default 100) and `offset` with real semantics by walking the newest-first list with
 `count=100` + `before_id`, skipping `offset` matches, collecting `limit`. `startTimeFrom`
 (inclusive) / `startTimeTo` (exclusive; date-only = whole UTC day) filter on `start_time`
-(RFC 2822) server-side. Bounds: 25 Dubber requests (2,500 scanned) per call, then
+(RFC 2822) server-side. Bounds: 10 Dubber requests (1,000 scanned) per call, then
 `scanCapReached` + `nextCursor` (last examined recording id, used as `before_id`) +
 `remainingOffset` (offset still unskipped at stop time, 0 once skipping finished); continue with
 `cursor=nextCursor` and `offset=remainingOffset`. The scan
@@ -118,17 +110,21 @@ start before it (start_time order within the list isn't guaranteed, hence whole-
 `ToolInputError` (Dubber forbids combining them). There is no user filter on recordings: resolve a
 user's dub points via `dubber_dub_points_list` (`user` URL ends `/users/<USER_ID>`), one call per
 dub point. node-dubber >= 1.1.0 types these params, so `fetchRecordingsPage` passes them
-directly. Tool count stays 37.
+directly. A Dubber rate limit after the first page ends the scan with the recordings read so
+far, `rateLimited: true` and a `nextCursor` to resume from; on the first page it is an error.
 
 ### Recording link (WYREAI-567 item 2)
 
-`dubber_recordings_get` takes optional `listener` (email of a Dubber user with access to the
-recording) and `contentDisposition` (`inline` | `attachment` | `attachment;filename=<name>.mp3`,
-requires `listener`), sent as Dubber's `listener` / `content_disposition` query params
-(Get Recording Link, developer.dubber.net). The response then carries `recording_url`, a
+`dubber_recordings_get_link` takes `listener` (required: the email of the Dubber user asking
+for the link) and optional `contentDisposition` (`inline` | `attachment` |
+`attachment;filename=<name>.mp3`), sent as Dubber's `listener` / `content_disposition` query
+params (Get Recording Link, developer.dubber.net). The response carries `recording_url`, a
 pre-signed S3 link with an `Expires` query param. It is a bearer secret: returned to the
-caller, never logged (the logger strips signed-URL signatures) and never cached. No
-listener is ever defaulted or invented. The tool stays read tier.
+caller, never logged (the logger strips signed-URL signatures) and never cached. Dubber
+authorizes the link for `listener` and may attribute the access to that user, so no
+listener is ever defaulted or invented, and the description tells the model to pass only
+the requester's own email. It is a separate tool from `dubber_recordings_get` so Conduit
+can enable plain reads without audio links.
 
 ## 4. API-surface confidence
 
@@ -147,11 +143,8 @@ signature. Treat this as a documented floor, not an asserted ceiling.
 `@wyre-ai` scope, `ghcr.io/wyre-ai`, WYRE-AI/reusable-workflows release
 caller, MCP SDK v2 with dual-era (`legacy: 'stateless'`) serving from day
 one (no v1→v2 migration debt), the standard s2s-verify (`X-Gateway-S2S`)
-wrapper, and the §2.7b destructive-tool warning convention (5 tools:
-`dubber_recordings_delete`, `dubber_recordings_delete_tags`,
-`dubber_users_delete`, `dubber_notifications_delete`,
-`dubber_oauth_revoke_token` — recording deletion is the only Tier A
-irreversible action; the rest are Tier B reversible-with-real-impact).
+wrapper, and the read-only template contract (`read` the only tier; the §2.7b
+destructive-warning lint still runs and finds no destructive tools).
 
 No `deploy:` job — Dubber is conduit-only (see release.yml's header
 comment), matching kpn-mcp, connectwise-cpq-mcp, scalepad-mcp and clio-mcp.
