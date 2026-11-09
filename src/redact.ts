@@ -12,20 +12,18 @@
 export const REDACTED = "[REDACTED]";
 
 /** Normalized (lower-case, no `_`/`-`) key names whose string values are credentials. */
-const SENSITIVE_KEYS = new Set([
-  "authorization",
-  "password",
-  "secret",
-  "clientsecret",
-  "authtoken",
-  "accesstoken",
-  "refreshtoken",
-  "xdubberclientsecret",
-  "xdubberauthtoken",
-]);
+const SENSITIVE_KEYS = new Set(["authorization", "hmac"]);
+
+/**
+ * Any normalized key ENDING in one of these is a credential too: token, apikey, signingkey,
+ * hmackey, webhooksecret, clientsecret, xdubberauthtoken, password, ... Ids (`*_id`), links
+ * (`recording_url`) and `token_type` do not end this way, so they are still returned.
+ */
+const SENSITIVE_SUFFIX = /(secret|token|key|password)$/;
 
 function isSensitiveKey(key: string): boolean {
-  return SENSITIVE_KEYS.has(key.toLowerCase().replace(/[_-]/g, ""));
+  const normalized = key.toLowerCase().replace(/[_-]/g, "");
+  return SENSITIVE_KEYS.has(normalized) || SENSITIVE_SUFFIX.test(normalized);
 }
 
 /** Recursively replaces string values under credential-named keys. Returns a new value. */

@@ -20,7 +20,7 @@ import type { DubberCredentials } from "../credentials.js";
 import { handleToolCall } from "../handlers/index.js";
 import type { ToolResult } from "../handlers/results.js";
 import { makeMcpServerFactory } from "../mcp-server.js";
-import { redactLogText, redactText } from "../redact.js";
+import { REDACTED, redactLogText, redactText, redactValue } from "../redact.js";
 import { toolsForTiers } from "../tools/index.js";
 
 const CREDS: DubberCredentials = {
@@ -311,6 +311,43 @@ describe("redaction", () => {
   it("removes known secrets, bearer tokens and credential-named keys", () => {
     const out = redactText(`echo ${CREDS.clientSecret} Bearer ${ACCESS_TOKEN}`, [CREDS.clientSecret]);
     expect(out).toBe("echo [REDACTED] [REDACTED]");
+  });
+
+  it("redacts generic credential key names (a REST hook's auth material) but keeps ids and links", () => {
+    const hook = {
+      id: "n-1",
+      notification_id: "n-1",
+      account_id: "a-1",
+      recording_url: SIGNED_URL,
+      token_type: "bearer",
+      token: "hook-token",
+      api_key: "hook-api-key",
+      apiKey: "hook-api-key",
+      key: "hook-key",
+      signing_key: "hook-signing-key",
+      hmac: "hook-hmac",
+      hmac_key: "hook-hmac-key",
+      webhook_secret: "hook-secret",
+      client_secret: "hook-client-secret",
+      auth: { password: "hook-password", Authorization: "Basic abc" },
+    };
+    expect(redactValue(hook)).toEqual({
+      id: "n-1",
+      notification_id: "n-1",
+      account_id: "a-1",
+      recording_url: SIGNED_URL,
+      token_type: "bearer",
+      token: REDACTED,
+      api_key: REDACTED,
+      apiKey: REDACTED,
+      key: REDACTED,
+      signing_key: REDACTED,
+      hmac: REDACTED,
+      hmac_key: REDACTED,
+      webhook_secret: REDACTED,
+      client_secret: REDACTED,
+      auth: { password: REDACTED, Authorization: REDACTED },
+    });
   });
 
   it("removes a known secret that appears JSON-escaped", () => {
