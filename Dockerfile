@@ -1,49 +1,37 @@
-# Multi-stage build for efficient container size.
-# Build with: docker build --platform linux/amd64 --build-arg GITHUB_TOKEN=$(gh auth token) -t dubber-mcp .
-FROM node:22-alpine AS builder
+# Multi-stage build. linux/amd64 per fleet law. GitHub Packages auth for the
+# @wyre-ai/* SDK is a BuildKit secret, never a build arg or image layer:
+#   printf '@wyre-ai:registry=https://npm.pkg.github.com\n//npm.pkg.github.com/:_authToken=%s\n' "$(gh auth token)" > /tmp/dubber.npmrc
+#   docker build --platform linux/amd64 --secret id=npmrc,src=/tmp/dubber.npmrc -t dubber-mcp .
+# The release workflow (WYRE-AI/reusable-workflows mcp-server-release.yml)
+# supplies the same `npmrc` secret.
 
-ARG VERSION="unknown"
-ARG COMMIT_SHA="unknown"
-ARG BUILD_DATE="unknown"
-ARG GITHUB_TOKEN
+# node:22-alpine, pinned by manifest-list digest. Bump deliberately.
+FROM node:22-alpine@sha256:0e1754758c2df4cfa3e68d59e2e1b7374bb7fd9ea6328eaaacf15cc934af8202 AS builder
 
 WORKDIR /app
 
 COPY package*.json ./
+# --ignore-scripts: no dependency lifecycle scripts run during install.
+RUN --mount=type=secret,id=npmrc,target=/app/.npmrc npm ci --ignore-scripts
 
-# Install dependencies with GitHub Packages auth for @wyre-ai/* scope.
-# --ignore-scripts prevents lifecycle scripts from running before source is copied.
-RUN echo "@wyre-ai:registry=https://npm.pkg.github.com" > .npmrc && \
-    echo "//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}" >> .npmrc && \
-    npm ci --ignore-scripts && \
-    rm -f .npmrc
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build && npm prune --omit=dev && npm cache clean --force
 
-COPY . .
+FROM node:22-alpine@sha256:0e1754758c2df4cfa3e68d59e2e1b7374bb7fd9ea6328eaaacf15cc934af8202 AS production
 
-RUN npm run build
-
-# Prune dev dependencies in the builder so the production stage copies a
-# runtime-only node_modules (no re-install, no registry auth needed).
-RUN npm prune --omit=dev && npm cache clean --force
-
-FROM node:22-alpine AS production
-
-# Pull latest Alpine package fixes even when the base layer is cached
-RUN apk -U upgrade --no-cache
-
-RUN addgroup -g 1001 -S dubber && \
-    adduser -S dubber -u 1001 -G dubber
+RUN apk -U upgrade --no-cache \
+  && addgroup -g 1001 -S dubber \
+  && adduser -S dubber -u 1001 -G dubber
 
 WORKDIR /app
 
-COPY --from=builder /app/package*.json ./
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder --chown=dubber:dubber /app/package.json ./
+COPY --from=builder --chown=dubber:dubber /app/dist ./dist
+COPY --from=builder --chown=dubber:dubber /app/node_modules ./node_modules
 
-# Remove the npm CLI from the production image — the runtime only needs `node`,
-# and npm's bundled dependencies regularly trip vulnerability scanners.
-RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx && \
-    chown -R dubber:dubber /app
+# npm/npx are not needed at runtime and carry their own CVE surface.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 USER dubber
 
@@ -52,15 +40,18 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
-# 0.0.0.0 is the in-container bind. Startup still refuses to listen without a
-# real CONDUIT_S2S_SECRET. MCP_ALLOW_INSECURE_DEV=1 ignores MCP_HTTP_HOST and
-# binds 127.0.0.1 only. AUTH_MODE=gateway never falls back to image env credentials.
-ENV NODE_ENV=production
-ENV LOG_LEVEL=info
-ENV MCP_TRANSPORT=http
-ENV MCP_HTTP_PORT=8080
-ENV MCP_HTTP_HOST=0.0.0.0
-ENV AUTH_MODE=gateway
+# 0.0.0.0 is safe only because startup refuses to listen without a real
+# CONDUIT_S2S_SECRET, supplied at runtime by the platform and never baked into
+# the image. AUTH_MODE=gateway never reads DUBBER_* credentials; they arrive
+# per request on the X-Dubber-* headers. Read tier only unless the platform
+# sets DUBBER_TOOL_TIERS (e.g. read,write,admin).
+ENV NODE_ENV=production \
+    LOG_LEVEL=info \
+    MCP_TRANSPORT=http \
+    MCP_HTTP_PORT=8080 \
+    MCP_HTTP_HOST=0.0.0.0 \
+    AUTH_MODE=gateway \
+    DUBBER_TOOL_TIERS=read
 
 CMD ["node", "dist/index.js"]
 

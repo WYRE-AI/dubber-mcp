@@ -8,8 +8,9 @@ services:
   dubber-mcp:
     build:
       context: .
-      args:
-        GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # GitHub Packages auth for @wyre-ai/*, as a BuildKit secret (see Dockerfile).
+      secrets:
+        - npmrc
     ports:
       - "127.0.0.1:8080:8080"
     environment:
@@ -25,3 +26,9 @@ services:
       timeout: 10s
       retries: 3
       start_period: 5s
+
+secrets:
+  # An .npmrc with a read:packages token, written outside the repo, e.g.
+  #   printf '@wyre-ai:registry=https://npm.pkg.github.com\n//npm.pkg.github.com/:_authToken=%s\n' "$(gh auth token)" > /tmp/dubber.npmrc
+  npmrc:
+    file: ${NPMRC_FILE:-/tmp/dubber.npmrc}

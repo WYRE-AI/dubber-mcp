@@ -1,0 +1,17 @@
+name: a path-traversal ID is rejected before any upstream call
+server:
+  command: node
+  args: [dist/entry.js]
+  env:
+    DUBBER_CLIENT_ID: eval-client-id-not-real
+    DUBBER_CLIENT_SECRET: eval-client-secret-not-real
+    DUBBER_AUTH_ID: eval-auth-id-not-real
+    DUBBER_AUTH_TOKEN: eval-auth-token-not-real
+assert:
+  tool: dubber_recordings_get
+  args:
+    recordingId: ".."
+  expect:
+    is_error: true
+    contains: ["recordingId"]
+timeout: 30s
