@@ -90,4 +90,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `dubber_groups_list_unidentified_dub_points`.
 - The undocumented `query` input on `dubber_recordings_list`.
 
+### Security
+
+- `@modelcontextprotocol/server` (and `core`) bumped to `^2.4.0`, `@modelcontextprotocol/node`
+  to `^2.1.2`, and the lockfile moved to `zod` 4.6.7 and `hono` 4.13.17. This clears
+  GHSA-jm63-cq47-j5jp, GHSA-46jr-4wx8-v453, GHSA-rvq5-wwqv-78pq and GHSA-mrhx-c7xc-m3w5
+  (`npm audit --omit=dev`: 0 vulnerabilities), which would otherwise fail the release's
+  HIGH/CRITICAL image scan.
+
 Entries below this line are written by semantic-release from commit history.
