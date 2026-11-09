@@ -45,15 +45,16 @@
         },
         {
           "name": "DUBBER_REGION",
-          "description": "API region segment, e.g. 'sandbox' for testing.",
+          "description": "API region segment: sandbox, us, au, eu, or uk.",
           "isRequired": false,
           "default": "sandbox",
           "format": "string"
         },
         {
-          "name": "DUBBER_BASE_URL",
-          "description": "Full API base URL override (env mode only; overrides DUBBER_REGION)",
+          "name": "DUBBER_TOOL_TIERS",
+          "description": "Enabled tool tiers: read (default), write, admin. 'read,write,admin' enables all tools.",
           "isRequired": false,
+          "default": "read",
           "format": "string"
         },
         {

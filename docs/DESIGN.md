@@ -62,10 +62,28 @@ Four values, all required:
 | Dubber Auth Token | Dubber portal → API tab | `X-Dubber-Auth-Token` | `DUBBER_AUTH_TOKEN` |
 
 Optional: `region` (`X-Dubber-Region` / `DUBBER_REGION`, default `sandbox`) —
-selects the `https://api.dubber.net/<region>/v1` host. `DUBBER_BASE_URL` is
-an env-mode-only full override (never accepted from a gateway header — a
-caller-chosen base URL would make the server send secrets to, and fetch
-from, any host).
+selects the path segment in `https://api.dubber.net/<region>/v1` and must be
+one of `sandbox`, `us`, `au`, `eu`, `uk` (Conduit's `DUBBER_VALID_REGIONS`).
+There is no base-URL input of any kind: the origin is a constant.
+
+### 2.1 Transport security contract (fleet template)
+
+node-dubber's resource classes build each endpoint's path and query, but no
+request uses the SDK's own `fetch`. `src/dubber-api.ts` is the only path to
+Dubber: fixed origin plus an exact-path check on every built URL,
+`redirect: "manual"` with every 3xx refused (including the token mint, whose
+body carries the client secret), 4 MiB bounded reads, vendor request ids on
+errors, no automatic retries except one re-mint after a 401, and a
+per-credential token cache (Dubber allows ~500 calls per token per 24 h).
+Path IDs are validated in the handlers (`requireId`) before node-dubber
+percent-encodes them.
+
+Tool tiers (`read` / `write` / `admin`) are derived from annotations the way
+Conduit derives them (destructiveHint → admin, readOnlyHint → read, else
+write). `DUBBER_TOOL_TIERS` defaults to `read` (16 tools);
+`read,write,admin` enables all 37. `X-Conduit-Tool-Tiers` can only narrow,
+and an empty header means zero tools. `dubber_recordings_get_upload_target`
+is a GET but write tier: its result is a credential to upload audio.
 
 Unlike kpn-mcp's dual-realm (gateway + MSM) credential shape, Dubber has one
 token realm and one credential set — no optional/paired-fallback logic
@@ -73,7 +91,7 @@ needed here.
 
 ## 3. Auth mechanics
 
-POST `{baseUrl}/token`, `application/x-www-form-urlencoded`, body
+POST `https://api.dubber.net/<region>/v1/token`, `application/x-www-form-urlencoded`, body
 `grant_type=password&client_id=...&client_secret=...&username={authId}&password={authToken}`.
 Response carries `access_token`, `token_type`, `expires_in`, `refresh_token`.
 This client re-mints via the same password grant on expiry rather than using
@@ -99,9 +117,18 @@ start before it (start_time order within the list isn't guaranteed, hence whole-
 (same cursor ⇒ same value) and echoed in `filters`; blank values or both together are a
 `ToolInputError` (Dubber forbids combining them). There is no user filter on recordings: resolve a
 user's dub points via `dubber_dub_points_list` (`user` URL ends `/users/<USER_ID>`), one call per
-dub point. The SDK 1.0.0 call is made through one cast in `src/handlers/recordings-list.ts`
-(`fetchRecordingsPage`), since the SDK types `{limit, offset}` but forwards keys verbatim.
-Tool count stays 37.
+dub point. node-dubber >= 1.1.0 types these params, so `fetchRecordingsPage` passes them
+directly. Tool count stays 37.
+
+### Recording link (WYREAI-567 item 2)
+
+`dubber_recordings_get` takes optional `listener` (email of a Dubber user with access to the
+recording) and `contentDisposition` (`inline` | `attachment` | `attachment;filename=<name>.mp3`,
+requires `listener`), sent as Dubber's `listener` / `content_disposition` query params
+(Get Recording Link, developer.dubber.net). The response then carries `recording_url`, a
+pre-signed S3 link with an `Expires` query param. It is a bearer secret: returned to the
+caller, never logged (the logger strips signed-URL signatures) and never cached. No
+listener is ever defaulted or invented. The tool stays read tier.
 
 ## 4. API-surface confidence
 

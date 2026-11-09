@@ -53,3 +53,32 @@ decisions: `docs/DESIGN.md`.
   `azure/vendor-fleet.conduit-prod.bicepparam` (mcp-vendor-scaffolding §3), a marketplace
   plugin entry (§4), and any live call against a real Dubber sandbox account (see above —
   everything here is MSW-mock-verified, not live-verified).
+
+## Learnings - 2026-11-09
+
+- **node-dubber's HTTP layer can't meet the fleet transport contract** (it uses bare `fetch`:
+  redirect-follow, unbounded reads, no dot-segment check, token mint follows redirects with
+  the client secret in the body). Rather than fork the SDK, `src/dubber-api.ts` passes its
+  own `GuardedHttp` (one `request(path, options)` method) to node-dubber's exported
+  resource classes. The SDK keeps owning paths/params; this repo owns every byte on the
+  wire. node-dubber types the constructor arg as its `HttpClient` class (private fields),
+  hence the single `as unknown as HttpClient` cast.
+- **`encodeURIComponent("..")` is still `..`**, and `new URL()` then normalizes it away
+  (`/recordings/..` → `/<region>/v1/`). Encoding alone is not traversal protection: ids
+  are validated (`requireId`) AND the built URL's pathname must equal the expected path.
+- **AsyncLocalStorage survives the v2 SDK's `createMcpHandler` → factory path.** Wrapping
+  `handleMcpRequest(req, res)` in `runInRequestScope` is enough for the factory and the
+  logger to see that request's credentials; the http-s2s-auth test proves header creds
+  reach the token mint.
+- **Conduit derives tiers from annotations** (`destructiveHint` → admin, `readOnlyHint` →
+  read, else write; `src/access/first-party-default.test.ts`). `toolTier()` mirrors that
+  rule so the sidecar and Conduit can't disagree. Changing
+  `dubber_recordings_get_upload_target` to write tier makes Conduit's
+  `tool-naming-exceptions.ts` entry for it (which says "a read") stale; update it in the
+  Conduit repin PR.
+- **Default tiers are now `read`** (16 tools). Conduit's
+  `tests/mcp/manifests/container-tools.json` lists all 37; the repin PR must either set
+  `DUBBER_TOOL_TIERS=read,write,admin` on the container or update the manifest.
+- **The reusable release workflow supplies an `npmrc` BuildKit secret** (style 3 in
+  `mcp-server-release.yml`), so the Dockerfile mounts it instead of taking a
+  `GITHUB_TOKEN` build arg; no workflow change was needed.

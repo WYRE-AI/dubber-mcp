@@ -8,9 +8,27 @@ Built on the MCP **2026-07-28** spec via the split v2 SDK
 (`@modelcontextprotocol/server` / `/node` / `/client` `^2.0.0-beta.5`) with **dual-era
 serving**: one shared `McpServerFactory` behind `createMcpHandler({ legacy: 'stateless' })`
 answers both 2025-era `initialize`-handshake clients (the WYRE gateway today) and modern
-2026-07-28 envelope clients, with an identical, deterministic 37-tool surface for every
-caller. Ships as a GHCR container only (no MCPB bundle). The Dubber client is
-[`@wyre-ai/node-dubber`](https://github.com/WYRE-AI/node-dubber).
+2026-07-28 envelope clients, with the same deterministic tool surface for every caller.
+Ships as a GHCR container only (no MCPB bundle). Endpoint paths come from
+[`@wyre-ai/node-dubber`](https://github.com/WYRE-AI/node-dubber); every request goes
+through this server's own guarded transport (see [Security](#security)).
+
+## Tool tiers
+
+Each tool has a tier, derived from its annotations the same way Conduit derives it:
+`destructiveHint` → `admin`, `readOnlyHint` → `read`, anything else → `write`.
+
+| `DUBBER_TOOL_TIERS` | Tools |
+|---|---|
+| `read` (default, and the image default) | 16 read-only tools |
+| `read,write` | 32 |
+| `read,write,admin` | all 37 |
+
+Conduit's `X-Conduit-Tool-Tiers` request header can only narrow this set. An empty header
+means no tools. A tool outside the enabled tiers is answered as `Unknown tool`.
+
+`dubber_recordings_get_upload_target` is a GET, but its result is a credential to upload
+audio, so it is `write` tier.
 
 ## Tools (37, flat)
 
@@ -27,6 +45,8 @@ caller. Ships as a GHCR container only (no MCPB bundle). The Dubber client is
   `dubber_recordings_list` lists newest first with `limit` (1–500, default 100), `offset`,
   `cursor`, `query`, `dubPointId`/`teamId`, and a `start_time` window — see
   [Listing recordings](#listing-recordings-and-time-windows).
+  `dubber_recordings_get` returns a recording link when given `listener` — see
+  [Recording links](#recording-links).
 - **Users**: `dubber_users_list`, `dubber_users_create`, `dubber_users_get`,
   `dubber_users_update`. Gated: `dubber_users_delete` (⚠ DESTRUCTIVE).
 - **Profile**: `dubber_profile_get`.
@@ -47,25 +67,25 @@ Four values, all required — none of them a human login (see "Vendor quirks" be
 | `DUBBER_CLIENT_SECRET` | `X-Dubber-Client-Secret` | Mashery application secret |
 | `DUBBER_AUTH_ID` | `X-Dubber-Auth-Id` | Dubber portal → API tab |
 | `DUBBER_AUTH_TOKEN` | `X-Dubber-Auth-Token` | Dubber portal → API tab |
-| `DUBBER_REGION` (optional, default `sandbox`) | `X-Dubber-Region` | Selects `api.dubber.net/<region>/v1` |
-| `DUBBER_BASE_URL` (optional) | none (deliberately) | Env-mode-only full override |
+| `DUBBER_REGION` (optional, default `sandbox`) | `X-Dubber-Region` | `sandbox`, `us`, `au`, `eu`, or `uk`: selects `api.dubber.net/<region>/v1` |
 
-In gateway mode a request missing any of the four required headers is answered `401`
-(JSON-RPC error `-32001`) before the MCP handler runs. It never falls through to env
-credentials — a header-controlled base URL is likewise refused entirely (env-mode only), so
-a caller can never redirect client secrets to another host. Blank or repeated header values
-count as missing.
+There is no base-URL setting: the host is always `https://api.dubber.net`, and any other
+region value is rejected (a `401` in gateway mode). In gateway mode a request missing any of
+the four required headers is answered `401` (JSON-RPC error `-32001`) before the MCP handler
+runs. Gateway mode never reads `DUBBER_*` from the environment. Blank or repeated header
+values count as missing.
 
 `/health` and `/healthz` stay unauthenticated and do not read credentials. The stdio
 transport does not use `CONDUIT_S2S_SECRET`.
 
 | Variable | Required | Description |
 |---|---|---|
-| `CONDUIT_S2S_SECRET` | Yes for HTTP | Service-to-service secret. The HTTP server logs an error and exits non-zero when this is empty or a known placeholder (`changeme`, `secret`, `replace-me`, `replace-with-a-real-secret`, and the other example values). Generate one with `openssl rand -hex 32`. Compose will not start without it. The value is never logged. |
+| `CONDUIT_S2S_SECRET` | Yes for HTTP | Service-to-service secret. The HTTP server logs an error and exits non-zero when this is empty, a known placeholder (`changeme`, `secret`, `replace-me`, `replace-with-a-real-secret`, and the other example values), shorter than 32 characters, or a repeated pattern. Generate one with `openssl rand -hex 32`. Compose will not start without it. The value is never logged. |
 | `MCP_ALLOW_INSECURE_DEV` | No | Set to exactly `1` only for local development to start HTTP without `CONDUIT_S2S_SECRET`. The process logs a warning, does not enforce `X-Gateway-S2S`, and binds `127.0.0.1` only. A non-loopback `MCP_HTTP_HOST` (including `0.0.0.0`) is ignored and the override is logged. A known placeholder secret still refuses to start. |
 | `MCP_HTTP_HOST` | No | Bind address when a real `CONDUIT_S2S_SECRET` is set. Unset keeps `0.0.0.0`, the historical container bind. The image and Compose set `0.0.0.0` inside the container. |
 | `MCP_HTTP_PORT` | No | HTTP port. Defaults to `8080`. |
-| `AUTH_MODE` | No | `gateway` (Docker image and Compose) or `env`. Gateway mode requires the four `X-Dubber-*` credential headers on each `/mcp` request and never falls back to `DUBBER_*`. `env` uses those variables only after S2S auth succeeds. Unset means `env` (stdio and single-tenant HTTP outside the image). |
+| `AUTH_MODE` | No | `gateway` (Docker image and Compose) or `env`. Gateway mode requires the four `X-Dubber-*` credential headers on each `/mcp` request and never falls back to `DUBBER_*`. `env` uses those variables only after S2S auth succeeds, and HTTP refuses to start in `env` mode without them. Unset means `env` (stdio and single-tenant HTTP outside the image). Any other value refuses to start. |
+| `DUBBER_TOOL_TIERS` | No | Comma-separated tiers: `read` (default), `write`, `admin`. See [Tool tiers](#tool-tiers). An unknown entry refuses to start. |
 
 ### HTTP authentication
 
@@ -116,7 +136,9 @@ pass a real S2S secret. In gateway mode, Dubber credentials arrive on each reque
 headers; they are not read from the environment.
 
 ```bash
-docker build --platform linux/amd64 --build-arg GITHUB_TOKEN=$(gh auth token) -t dubber-mcp .
+# GitHub Packages auth is a BuildKit secret, never a build arg or image layer.
+printf '@wyre-ai:registry=https://npm.pkg.github.com\n//npm.pkg.github.com/:_authToken=%s\n' "$(gh auth token)" > /tmp/dubber.npmrc
+docker build --platform linux/amd64 --secret id=npmrc,src=/tmp/dubber.npmrc -t dubber-mcp .
 docker run \
   -e CONDUIT_S2S_SECRET="$CONDUIT_S2S_SECRET" \
   -p 127.0.0.1:8080:8080 \
@@ -185,9 +207,41 @@ params. `dubber_recordings_list` therefore pages Dubber itself (`count=100`, cha
 - Result: `{ recordings, returned, hasMore, nextCursor, remainingOffset, scanned, requests, scanCapReached,
   filters, note }`.
 
-The handler sends Dubber's params through a single cast over `@wyre-ai/node-dubber` 1.0.0
-(whose typed params are `{limit, offset}`); drop the cast when the SDK release that types
-`count`/`before_id`/`query` is adopted.
+## Recording links
+
+`dubber_recordings_get` takes two optional inputs from Dubber's Get Recording Link endpoint:
+
+- `listener`: the email of a Dubber user who can access the recording. With it, the response
+  also carries `recording_url`, a pre-signed link to the MP3. Dubber rejects a listener
+  without access. This server never defaults or invents a listener.
+- `contentDisposition`: `inline`, `attachment`, or `attachment;filename=<name>.mp3` (mp3
+  only). It requires `listener`.
+
+`recording_url` is a bearer secret: anyone holding it can download the call audio until it
+expires (its `Expires` query parameter is a Unix timestamp). This server returns it to the
+caller only. It never logs it (the logger strips signed-URL signatures) and never caches it.
+
+## Security
+
+The fleet template contract, as implemented here:
+
+- **Fixed host.** Every request goes through `src/dubber-api.ts`: the origin is the constant
+  `https://api.dubber.net`, the region is allowlisted, and every built URL must be exactly
+  `/<region>/v1<path>`. Path IDs are rejected if they are empty, `.`, `..`, contain `/` or
+  `\`, encoded separators or control characters, then percent-encoded.
+- **No redirects.** `redirect: "manual"`; any 3xx is an error, including on the token mint
+  that carries the client secret.
+- **Bounded reads.** Response bodies are capped at 4 MiB while streaming.
+- **Errors** keep the HTTP status, Dubber's message (capped), a retry hint on 429, and the
+  vendor request id when one is sent.
+- **Redaction.** Tool output is redacted by credential key names and by exact match on the
+  credentials in use. Every log line is redacted for the S2S secret, env and per-request
+  credentials, bearer tokens, and signed-URL signatures. Logs carry tool names, status and
+  request ids only, never arguments or results.
+- **Tokens** are cached per credential set for their lifetime (Dubber allows about 500 calls
+  per token per 24 h). After a 401, the server mints once more; nothing else is retried.
+- **Per-request scope.** In gateway mode the X-Dubber-* credentials and the effective tiers
+  live in an AsyncLocalStorage scope for exactly one request.
 
 ## Vendor quirks encoded here
 
