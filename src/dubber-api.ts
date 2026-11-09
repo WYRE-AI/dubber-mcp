@@ -11,7 +11,9 @@
  * - redirect: "manual", and any 3xx is an error (secrets are never re-sent);
  * - response bodies are bounded while streaming (4 MiB);
  * - vendor errors keep the HTTP status, the vendor message and a request id;
- * - no automatic retries, except one token refresh after a 401;
+ * - no automatic retries, except one token refresh after a 401 on a cached
+ *   token (Dubber also answers 401 for "no access to this resource", so a
+ *   401 on a token minted for this call is final);
  * - GET only, with no body: the read-only guarantee lives here, not only in
  *   the handlers (node-dubber's resources also expose write methods). The
  *   token mint is the one POST and calls send() directly.
@@ -226,17 +228,17 @@ async function mint(creds: DubberCredentials, key: string): Promise<DubberToken>
   return token;
 }
 
-/** Cached token until its refresh time, otherwise one shared mint. */
-async function getToken(creds: DubberCredentials): Promise<DubberToken> {
+/** Cached token until its refresh time (`cached: true`), otherwise one shared mint. */
+async function getToken(creds: DubberCredentials): Promise<{ token: DubberToken; cached: boolean }> {
   const key = cacheKey(creds);
   const cached = tokenCache.get(key);
-  if (cached && Date.now() < cached.expiresAt) return cached;
+  if (cached && Date.now() < cached.expiresAt) return { token: cached, cached: true };
   let pending = inFlight.get(key);
   if (!pending) {
     pending = mint(creds, key).finally(() => inFlight.delete(key));
     inFlight.set(key, pending);
   }
-  return pending;
+  return { token: await pending, cached: false };
 }
 
 /** Values that must never appear in tool output or logs: the credentials and the access token in use. */
@@ -265,13 +267,14 @@ class GuardedHttp {
     if (responseType !== "json") throw new DubberError("Binary Dubber responses are not supported.", 0, undefined);
     const url = buildUrl(this.creds, path, params);
     for (let attempt = 0; ; attempt++) {
-      const token = await getToken(this.creds);
+      const { token, cached } = await getToken(this.creds);
       const res = await send(url, {
         method: "GET",
         headers: { Accept: "application/json", Authorization: `Bearer ${token.accessToken}` },
       });
-      if (res.status === 401 && attempt === 0) {
-        // The cached token may have been revoked or expired early: mint once more.
+      if (res.status === 401 && cached && attempt === 0) {
+        // A cached token may have been revoked or expired early: mint once more.
+        // A token minted for this call is kept: its 401 is an access answer.
         await res.body?.cancel().catch(() => undefined);
         tokenCache.delete(cacheKey(this.creds));
         continue;
@@ -321,9 +324,10 @@ export function createDubberApi(creds: DubberCredentials): DubberApi {
     dubPoints: new DubPointsResource(http),
     request: <T>(path: string, options?: RequestOptions) => guarded.request<T>(path, options),
 
+    /** GET /profile, so a cached token is checked against Dubber too (and re-minted once on a 401). */
     async testConnection() {
       try {
-        await getToken(creds);
+        await guarded.request("/profile");
         return { ok: true };
       } catch (err) {
         if (err instanceof DubberError) {

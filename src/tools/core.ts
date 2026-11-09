@@ -5,8 +5,8 @@ export const CORE_TOOLS: Tool[] = [
   {
     name: "dubber_test_connection",
     description:
-      "Verify Dubber API credentials by minting an OAuth token. Reports whether the mint " +
-      "succeeded; a successful mint does not prove any specific account/product access.",
+      "Verify Dubber API credentials with one authenticated GET /profile (minting an OAuth token " +
+      "only if none is cached). A success does not prove any specific account/product access.",
     inputSchema: { type: "object", properties: {} },
     annotations: { readOnlyHint: true, openWorldHint: true },
   },

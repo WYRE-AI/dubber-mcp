@@ -545,8 +545,12 @@ describe("HTTP /mcp authentication", () => {
       expect(response.body).not.toContain(ENV_CLIENT_SECRET);
       expect(response.body).not.toContain(ENV_AUTH_TOKEN);
       expect(logs.text()).not.toContain(S2S_SECRET);
-      // Exactly one token mint, on the header region, with the header credentials (never env).
-      expect(outbound.map((o) => o.url)).toEqual(["https://api.dubber.net/us/v1/token"]);
+      // Exactly one token mint, on the header region, with the header credentials (never env),
+      // then the connection check's GET /profile.
+      expect(outbound.map((o) => o.url)).toEqual([
+        "https://api.dubber.net/us/v1/token",
+        "https://api.dubber.net/us/v1/profile",
+      ]);
       expect(Object.fromEntries(new URLSearchParams(outbound[0]!.body))).toEqual({
         grant_type: "password",
         client_id: "header-client-id",

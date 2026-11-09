@@ -69,6 +69,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release workflow is pinned to reusable-workflows `508ef4d` with `fail-on-severity:
   HIGH,CRITICAL`.
 
+- A 401 re-mints the token only when the token was taken from the cache. A 401 on a token
+  minted for the same call is returned as is and the token stays cached: Dubber also answers
+  401 for "no access to this resource", and re-minting spent its ~500 mints/day budget.
+- The 401 hint says the cause can be wrong credentials or a token without access to the
+  resource (such as unidentified dub points, which need a group-level token).
+- `dubber_test_connection` makes one authenticated `GET /profile` instead of only checking for
+  a token, so a cached token for revoked credentials no longer reports success.
+
 ### Removed
 
 - `DUBBER_BASE_URL`. The host is always `https://api.dubber.net`.

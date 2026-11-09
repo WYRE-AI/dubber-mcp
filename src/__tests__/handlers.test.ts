@@ -34,11 +34,11 @@ describe("core", () => {
     expect(client.testConnection).toHaveBeenCalledTimes(1);
   });
 
-  it("dubber_test_connection surfaces a failed mint as isError", async () => {
+  it("dubber_test_connection surfaces a failed check as isError", async () => {
     const client = stubClient({ testConnection: vi.fn(async () => ({ ok: false, error: "bad creds" })) as never });
     const result = await handleToolCall(client, "dubber_test_connection", {});
     expect(asTool(result).isError).toBe(true);
-    expect(text(result)).toContain("rejected");
+    expect(text(result)).toContain("Dubber connection check failed");
   });
 });
 

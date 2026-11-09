@@ -221,7 +221,9 @@ The fleet template contract, as implemented here:
 - **Tokens** are cached per credential set and reused for the first half of their lifetime
   (at most until 30 minutes before expiry; a missing `expires_in` counts as Dubber's documented
   24 h). Dubber caps tokens at about 500 per 24 h and its sample token lives 240 s, so minting
-  per call is not an option. After a 401, the server mints once more; nothing else is retried.
+  per call is not an option. After a 401 on a cached token, the server mints once more; a 401
+  on a token minted for that call is returned as is (Dubber also uses 401 for "no access to
+  this resource"). Nothing else is retried.
 - **Per-request scope.** In gateway mode the X-Dubber-* credentials and the effective tiers
   live in an AsyncLocalStorage scope for exactly one request.
 

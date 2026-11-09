@@ -109,11 +109,53 @@ describe("auth headers", () => {
     for (const value of Object.values(CREDS).slice(0, 4)) expect(sent[1]!.url.href).not.toContain(value);
   });
 
-  it("re-mints once after a 401, then gives up", async () => {
+  it("re-mints once after a 401 on a cached token, then gives up", async () => {
+    await handleToolCall(createDubberApi(CREDS), "dubber_profile_get", {}); // caches the token
+    sent = [];
     respond = () => json({ message: "expired" }, 401);
     const result = await handleToolCall(createDubberApi(CREDS), "dubber_profile_get", {});
-    expect(sent.map((s) => s.url.pathname)).toEqual(["/au/v1/token", "/au/v1/profile", "/au/v1/token", "/au/v1/profile"]);
+    expect(sent.map((s) => s.url.pathname)).toEqual(["/au/v1/profile", "/au/v1/token", "/au/v1/profile"]);
     expect(text(result)).toContain("Dubber error (HTTP 401)");
+  });
+
+  it("does not re-mint after a 401 on a token minted for this call, and keeps it cached", async () => {
+    // Dubber also answers 401 for "no access to this resource"; a second mint would only spend its ~500/day budget.
+    respond = () => json({ message: "Not authorized to make this request." }, 401);
+    const api = createDubberApi(CREDS);
+    const result = await handleToolCall(api, "dubber_groups_list_unidentified_dub_points", { groupId: "g-1" });
+    expect(sent.map((s) => s.url.pathname)).toEqual(["/au/v1/token", "/au/v1/groups/g-1/unidentified_dub_points"]);
+    expect(text(result)).toContain("Dubber error (HTTP 401)");
+    sent = [];
+    respond = () => json({ id: "ok" });
+    await handleToolCall(api, "dubber_profile_get", {});
+    expect(sent.map((s) => s.url.pathname)).toEqual(["/au/v1/profile"]);
+  });
+
+  it("says a 401 can mean bad credentials or a token without access to the resource", async () => {
+    respond = () => json({ message: "Not authorized to make this request." }, 401);
+    const result = await handleToolCall(createDubberApi(CREDS), "dubber_profile_get", {});
+    expect(text(result)).toContain("either the credentials are wrong");
+    expect(text(result)).toContain("group-level token");
+  });
+});
+
+describe("dubber_test_connection", () => {
+  it("contacts Dubber even when a token is cached", async () => {
+    await handleToolCall(createDubberApi(CREDS), "dubber_profile_get", {}); // caches the token
+    sent = [];
+    const result = await handleToolCall(createDubberApi(CREDS), "dubber_test_connection", {});
+    expect(sent.map((s) => `${s.method} ${s.url.pathname}`)).toEqual(["GET /au/v1/profile"]);
+    expect((result as ToolResult).isError).toBeFalsy();
+  });
+
+  it("reports failure when the cached token and a fresh one are both refused", async () => {
+    await handleToolCall(createDubberApi(CREDS), "dubber_profile_get", {}); // caches the token
+    sent = [];
+    respond = () => json({ message: "revoked" }, 401);
+    const result = await handleToolCall(createDubberApi(CREDS), "dubber_test_connection", {});
+    expect(sent.map((s) => s.url.pathname)).toEqual(["/au/v1/profile", "/au/v1/token", "/au/v1/profile"]);
+    expect((result as ToolResult).isError).toBe(true);
+    expect(text(result)).toContain("Dubber connection check failed");
   });
 });
 
@@ -287,7 +329,7 @@ describe("redaction", () => {
 describe("every tool sends exactly the documented request (real transport, fetch stubbed)", () => {
   /** [args, expected "METHOD path?query" lines after the token mint]. Bodies must be empty. */
   const EXPECTED: Record<string, [Record<string, unknown>, string[]]> = {
-    dubber_test_connection: [{}, []],
+    dubber_test_connection: [{}, ["GET /au/v1/profile"]],
     dubber_groups_get: [{ groupId: "g-1" }, ["GET /au/v1/groups/g-1"]],
     dubber_groups_list_unidentified_dub_points: [{ groupId: "g-1" }, ["GET /au/v1/groups/g-1/unidentified_dub_points"]],
     dubber_accounts_get: [{ accountId: "a-1" }, ["GET /au/v1/accounts/a-1"]],

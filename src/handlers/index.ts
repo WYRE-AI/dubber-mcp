@@ -69,7 +69,9 @@ export function describeDubberError(error: DubberApiError): string {
     text += " The credentials may lack access to this account/group.";
   }
   if (error instanceof AuthenticationError) {
-    text += " Check the Dubber Client ID/Secret and Auth ID/Token.";
+    text +=
+      " Dubber answers 401 when either the credentials are wrong (Client ID/Secret, Auth ID/Token) or the token " +
+      "has no access to this resource (for example, unidentified dub points need a group-level token).";
   }
   if (error.requestId) text += ` (request id: ${error.requestId})`;
   return text;
