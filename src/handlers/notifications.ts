@@ -1,9 +1,10 @@
-import type { DubberClient } from "@wyre-ai/node-dubber";
+import type { DubberApi } from "../dubber-api.js";
 import { confirmDestructive, type ElicitationContext } from "../elicitation.js";
 import {
   errorResult,
   jsonResult,
   requireObject,
+  requireId,
   requireString,
   textResult,
   type ToolHandler,
@@ -12,45 +13,45 @@ import {
 
 const CANCELLED = "Cancelled — nothing was changed.";
 
-async function list(client: DubberClient, args: Record<string, unknown>): Promise<ToolResult> {
-  const notifications = await client.notifications.list(requireString(args, "accountId"));
+async function list(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
+  const notifications = await client.notifications.list(requireId(args, "accountId"));
   if (notifications.length === 0) return jsonResult({ notifications: [], note: "No notification subscriptions." });
   return jsonResult(notifications);
 }
 
-async function create(client: DubberClient, args: Record<string, unknown>): Promise<ToolResult> {
-  const accountId = requireString(args, "accountId");
+async function create(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
+  const accountId = requireId(args, "accountId");
   const url = requireString(args, "url");
   const event = requireString(args, "event");
   return jsonResult(await client.notifications.create(accountId, { url, event }));
 }
 
-async function get(client: DubberClient, args: Record<string, unknown>): Promise<ToolResult> {
-  return jsonResult(await client.notifications.get(requireString(args, "notificationId")));
+async function get(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
+  return jsonResult(await client.notifications.get(requireId(args, "notificationId")));
 }
 
-async function update(client: DubberClient, args: Record<string, unknown>): Promise<ToolResult> {
-  const notificationId = requireString(args, "notificationId");
+async function update(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
+  const notificationId = requireId(args, "notificationId");
   const data = requireObject(args, "data");
   return jsonResult(await client.notifications.update(notificationId, data));
 }
 
-async function activate(client: DubberClient, args: Record<string, unknown>): Promise<ToolResult> {
-  return jsonResult(await client.notifications.activate(requireString(args, "notificationId")));
+async function activate(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
+  return jsonResult(await client.notifications.activate(requireId(args, "notificationId")));
 }
 
-async function listUnclaimed(client: DubberClient, args: Record<string, unknown>): Promise<ToolResult> {
-  const events = await client.notifications.listUnclaimed(requireString(args, "notificationId"));
+async function listUnclaimed(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
+  const events = await client.notifications.listUnclaimed(requireId(args, "notificationId"));
   if (events.length === 0) return jsonResult({ events: [], note: "No unclaimed events." });
   return jsonResult(events);
 }
 
 async function deleteNotification(
-  client: DubberClient,
+  client: DubberApi,
   args: Record<string, unknown>,
   elicitation: ElicitationContext
 ) {
-  const notificationId = requireString(args, "notificationId");
+  const notificationId = requireId(args, "notificationId");
   const gate = confirmDestructive(
     elicitation,
     args,

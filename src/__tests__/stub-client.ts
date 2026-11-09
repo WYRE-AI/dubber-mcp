@@ -1,5 +1,5 @@
 /**
- * A network-free DubberClient for handler tests. Every SDK method used by
+ * A network-free DubberApi for handler tests. Every SDK method used by
  * the handlers is a vi.fn() with a harmless default, so a test overrides
  * only the calls it cares about:
  *
@@ -9,12 +9,12 @@
  *   await handleToolCall(client, "dubber_recordings_get", { recordingId: "rec-1" }, NO_ELICITATION);
  *   expect(client.recordings.get).toHaveBeenCalledWith("rec-1");
  *
- * The result is typed as both the mock tree and a DubberClient, so it can be
+ * The result is typed as both the mock tree and a DubberApi, so it can be
  * passed to handlers directly and still expose `.mock` for assertions.
  * Build it inside each test: vitest.config.ts sets `mockReset: true`.
  */
 import { vi, type Mock } from "vitest";
-import type { DubberClient } from "@wyre-ai/node-dubber";
+import type { DubberApi } from "../dubber-api.js";
 
 type Methods = Record<string, Mock>;
 
@@ -42,7 +42,7 @@ export interface StubOverrides {
   revokeToken?: Mock;
 }
 
-export type StubClient = StubTree & DubberClient;
+export type StubClient = StubTree & DubberApi;
 
 export function stubClient(overrides: StubOverrides = {}): StubClient {
   const tree: StubTree = {

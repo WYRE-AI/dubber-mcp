@@ -1,5 +1,5 @@
 /**
- * Handler dispatch against a stubbed DubberClient, covering every domain.
+ * Handler dispatch against a stubbed DubberApi, covering every domain.
  * Gated (destructive) tools exercise the real MRTR elicitation helpers: a
  * form-capable caller with no responses gets an `input_required` ask; a
  * retried request carries the answer in `inputResponses`; the stateless

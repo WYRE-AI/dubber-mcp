@@ -1,7 +1,7 @@
 /**
  * End-to-end elicitation over the REAL serving stack: the same
  * createMcpHandler({ legacy: 'stateless' }) + toNodeHandler wiring as
- * src/index.ts, with only the vendor DubberClient stubbed.
+ * src/index.ts, with only the Dubber client (createDubberApi) stubbed.
  *
  * Proves the MRTR seam on both protocol eras, using dubber_recordings_delete:
  * - a 2026-07-28 client with the elicitation capability gets the delete
@@ -25,19 +25,20 @@ const { recordingsApi } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("@wyre-ai/node-dubber", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@wyre-ai/node-dubber")>();
-  return {
-    ...actual,
-    DubberClient: class {
-      recordings = recordingsApi;
-    },
-  };
+vi.mock("../dubber-api.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../dubber-api.js")>();
+  return { ...actual, createDubberApi: () => ({ recordings: recordingsApi }) };
 });
 
 const { makeMcpServerFactory } = await import("../mcp-server.js");
 
-const ENV_KEYS = ["DUBBER_CLIENT_ID", "DUBBER_CLIENT_SECRET", "DUBBER_AUTH_ID", "DUBBER_AUTH_TOKEN"] as const;
+const ENV_KEYS = [
+  "DUBBER_CLIENT_ID",
+  "DUBBER_CLIENT_SECRET",
+  "DUBBER_AUTH_ID",
+  "DUBBER_AUTH_TOKEN",
+  "DUBBER_TOOL_TIERS",
+] as const;
 
 describe("elicitation over the live dual-era serving stack", () => {
   let mcpHandler: McpHttpHandler;
@@ -46,7 +47,9 @@ describe("elicitation over the live dual-era serving stack", () => {
 
   beforeAll(async () => {
     for (const key of ENV_KEYS) process.env[key] = "test-value";
-    mcpHandler = createMcpHandler(makeMcpServerFactory({ gatewayMode: false }), {
+    // dubber_recordings_delete is admin tier, which is off by default.
+    process.env.DUBBER_TOOL_TIERS = "read,write,admin";
+    mcpHandler = createMcpHandler(makeMcpServerFactory(), {
       legacy: "stateless",
     });
     const handleMcp = toNodeHandler(mcpHandler);

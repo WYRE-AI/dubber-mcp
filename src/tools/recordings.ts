@@ -91,10 +91,28 @@ export const RECORDINGS_TOOLS: Tool[] = [
   },
   {
     name: "dubber_recordings_get",
-    description: "Get a recording's details (metadata, tags, duration) by ID.",
+    description:
+      "Get a recording's details (metadata, tags, duration) by ID. Pass `listener` (the email of a Dubber user " +
+      "who can access the recording) to also get `recording_url`, a pre-signed link to the MP3 audio. That link " +
+      "is a bearer secret: anyone holding it can download the call audio until it expires (its Expires query " +
+      "parameter is a Unix timestamp). Share it only with the person who asked for it; this server never logs " +
+      "or caches it. Dubber rejects a listener without access to the recording.",
     inputSchema: {
       type: "object",
-      properties: { recordingId: { type: "string", description: "Dubber recording ID." } },
+      properties: {
+        recordingId: { type: "string", description: "Dubber recording ID." },
+        listener: {
+          type: "string",
+          description:
+            "Email of a Dubber user who can access this recording. When set, the response includes recording_url.",
+        },
+        contentDisposition: {
+          type: "string",
+          description:
+            'How the recording link downloads: "inline", "attachment", or "attachment;filename=<name>.mp3" ' +
+            "(mp3 only). Requires listener.",
+        },
+      },
       required: ["recordingId"],
     },
     annotations: { readOnlyHint: true, openWorldHint: true },
@@ -198,13 +216,17 @@ export const RECORDINGS_TOOLS: Tool[] = [
   },
   {
     name: "dubber_recordings_get_upload_target",
-    description: "Get the upload target/URL for a multipart recording upload in progress.",
+    description:
+      "Get the upload target/URL for a multipart recording upload in progress. Write tier: the returned URL " +
+      "grants upload access to the recording.",
     inputSchema: {
       type: "object",
       properties: { recordingId: { type: "string", description: "Dubber recording ID from the initiate step." } },
       required: ["recordingId"],
     },
-    annotations: { readOnlyHint: true, openWorldHint: true },
+    // Not read-only in effect: the result is a credential to write audio, and
+    // the tool only makes sense inside the write flow (initiate -> target -> complete).
+    annotations: { readOnlyHint: false, openWorldHint: true },
   },
   {
     name: "dubber_recordings_complete_upload",

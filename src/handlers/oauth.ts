@@ -1,10 +1,10 @@
-import type { DubberClient } from "@wyre-ai/node-dubber";
+import type { DubberApi } from "../dubber-api.js";
 import { confirmDestructive, type ElicitationContext } from "../elicitation.js";
 import { errorResult, textResult, type ToolHandler } from "./results.js";
 
 const CANCELLED = "Cancelled — nothing was changed.";
 
-async function revokeToken(client: DubberClient, args: Record<string, unknown>, elicitation: ElicitationContext) {
+async function revokeToken(client: DubberApi, args: Record<string, unknown>, elicitation: ElicitationContext) {
   const gate = confirmDestructive(
     elicitation,
     args,

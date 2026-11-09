@@ -8,14 +8,10 @@
  * fails every test instead of surfacing as "Unknown tool" in production.
  */
 import type { InputRequiredResult } from "@modelcontextprotocol/server";
-import {
-  AuthenticationError,
-  DubberError,
-  ForbiddenError,
-  RateLimitError,
-  type DubberClient,
-} from "@wyre-ai/node-dubber";
+import { AuthenticationError, DubberError, ForbiddenError, RateLimitError } from "@wyre-ai/node-dubber";
+import type { DubberApi, DubberApiError } from "../dubber-api.js";
 import { NO_ELICITATION, type ElicitationContext } from "../elicitation.js";
+import { logger } from "../utils/logger.js";
 import { TOOLS } from "../tools/index.js";
 import { ACCOUNTS_HANDLERS } from "./accounts.js";
 import { CORE_HANDLERS } from "./core.js";
@@ -57,21 +53,27 @@ for (const tool of TOOLS) {
   }
 }
 
-/** `Dubber error (HTTP {status}): {message}`. Built only from the parsed error — never from the request. */
-export function describeDubberError(error: DubberError): string {
-  let text = `Dubber error (HTTP ${error.statusCode}): ${error.message}`;
+const MAX_VENDOR_MESSAGE = 1000;
+
+/**
+ * `Dubber error (HTTP {status}): {message}` plus a hint and the vendor
+ * request id. Built only from the parsed error — never from the request.
+ */
+export function describeDubberError(error: DubberApiError): string {
+  let text = `Dubber error (HTTP ${error.statusCode}): ${error.message.slice(0, MAX_VENDOR_MESSAGE)}`;
   if (error instanceof RateLimitError) text += ` Rate limited; retry after ${error.retryAfter}s.`;
   if (error instanceof AuthenticationError) {
-    text += " Check DUBBER_CLIENT_ID/SECRET and DUBBER_AUTH_ID/TOKEN.";
+    text += " Check the Dubber Client ID/Secret and Auth ID/Token.";
   }
   if (error instanceof ForbiddenError) {
     text += " The credentials may lack access to this account/group.";
   }
+  if (error.requestId) text += ` (request id: ${error.requestId})`;
   return text;
 }
 
 export async function handleToolCall(
-  client: DubberClient,
+  client: DubberApi,
   name: string,
   args: Record<string, unknown>,
   elicitation: ElicitationContext = NO_ELICITATION
@@ -82,6 +84,14 @@ export async function handleToolCall(
   try {
     return await HANDLERS[name](client, args, elicitation);
   } catch (error) {
+    // Tool name, status and request id only — never arguments or bodies.
+    logger.warn("Tool call failed", {
+      tool: name,
+      errorType: error instanceof Error ? error.constructor.name : typeof error,
+      ...(error instanceof DubberError
+        ? { status: error.statusCode, requestId: (error as DubberApiError).requestId }
+        : {}),
+    });
     if (error instanceof ToolInputError) {
       return errorResult(`Invalid arguments for ${name}: ${error.message}`);
     }

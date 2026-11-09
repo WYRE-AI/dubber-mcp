@@ -1,7 +1,8 @@
 /** Shared tool-result helpers, the handler signature, and argument validation. */
 import type { InputRequiredResult } from "@modelcontextprotocol/server";
-import type { DubberClient } from "@wyre-ai/node-dubber";
+import type { DubberApi } from "../dubber-api.js";
 import type { ElicitationContext } from "../elicitation.js";
+import { redactValue } from "../redact.js";
 
 export type ToolContent =
   | { type: "text"; text: string }
@@ -19,13 +20,14 @@ export interface ToolResult {
  * into an isError result, so nothing ever escapes to the transport.
  */
 export type ToolHandler = (
-  client: DubberClient,
+  client: DubberApi,
   args: Record<string, unknown>,
   elicitation: ElicitationContext
 ) => Promise<ToolResult | InputRequiredResult>;
 
+/** JSON tool output. Values under credential-named keys are redacted; mcp-server.ts redacts the credentials in use. */
 export function jsonResult(value: unknown): ToolResult {
-  return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
+  return { content: [{ type: "text", text: JSON.stringify(redactValue(value), null, 2) }] };
 }
 
 export function textResult(text: string): ToolResult {
@@ -43,6 +45,33 @@ export function requireString(args: Record<string, unknown>, key: string): strin
   const value = args[key];
   if (typeof value !== "string" || value.trim() === "") {
     throw new ToolInputError(`Argument "${key}" is required and must be a non-empty string.`);
+  }
+  return value;
+}
+
+const MAX_ID_LENGTH = 256;
+
+/**
+ * A Dubber ID that becomes one URL path segment. Rejects anything that could
+ * change which endpoint is hit: empty, `.`, `..`, `/` or `\`, percent-encoded
+ * separators or dots, and control characters. node-dubber percent-encodes
+ * the returned value, and dubber-api.ts checks the final URL path again.
+ */
+export function requireId(args: Record<string, unknown>, key: string): string {
+  const value = requireString(args, key).trim();
+  if (
+    value.length > MAX_ID_LENGTH ||
+    value === "." ||
+    value === ".." ||
+    /[/\\]/.test(value) ||
+    /%(2f|5c|2e)/i.test(value) ||
+    // eslint-disable-next-line no-control-regex
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    throw new ToolInputError(
+      `Argument "${key}" must be a single ID (1-${MAX_ID_LENGTH} characters) without ".", "..", "/", "\\", ` +
+        "encoded separators, or control characters."
+    );
   }
   return value;
 }

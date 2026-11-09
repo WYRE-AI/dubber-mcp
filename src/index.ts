@@ -33,14 +33,23 @@ import { createMcpHandler } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import {
+  configuredTiers,
+  lockGatewayMode,
+  narrowTiers,
+  parseAuthMode,
+  TOOL_TIERS_HEADER,
+  type AuthMode,
+  type ToolTier,
+} from "./config.js";
+import {
   GATEWAY_HEADERS,
   REQUIRED_GATEWAY_HEADERS,
-  SERVER_VERSION,
-  createMcpServer,
-  makeMcpServerFactory,
   resolveEnvCredentials,
   resolveGatewayCredentials,
-} from "./mcp-server.js";
+  type DubberCredentials,
+} from "./credentials.js";
+import { SERVER_VERSION, makeMcpServerFactory } from "./mcp-server.js";
+import { runInRequestScope } from "./request-scope.js";
 import { logger } from "./utils/logger.js";
 import { verifyS2sHeader, S2S_HEADER } from "./s2s-verify.js";
 
@@ -59,7 +68,21 @@ const KNOWN_PLACEHOLDER_SECRETS = new Set([
   "example",
   "replace-me",
   "s2s-secret",
+  "conduit-s2s-secret",
+  "replace-with-openssl-rand-hex-32",
 ]);
+
+export const MIN_S2S_SECRET_LENGTH = 32;
+
+/** Placeholder, too short, or a short repeated pattern. Null when the secret is usable. */
+export function s2sSecretProblem(secret: string): string | null {
+  if (KNOWN_PLACEHOLDER_SECRETS.has(secret.toLowerCase())) return "is a known placeholder";
+  if (/replace|changeme|change-me|placeholder|example|your-?secret/i.test(secret)) return "looks like a placeholder";
+  if (secret.length < MIN_S2S_SECRET_LENGTH) return `is shorter than ${MIN_S2S_SECRET_LENGTH} characters`;
+  if (/^(.{1,8}?)\1+$/.test(secret)) return "is a repeated character pattern";
+  if (new Set(secret).size < 8) return "has too few distinct characters";
+  return null;
+}
 
 const LOOPBACK_HOST = "127.0.0.1";
 
@@ -68,9 +91,12 @@ const MISSING_S2S_SECRET_ERROR =
   "Set CONDUIT_S2S_SECRET to the gateway-provisioned secret (openssl rand -hex 32), " +
   "or set MCP_ALLOW_INSECURE_DEV=1 for local development only.";
 
-const PLACEHOLDER_S2S_SECRET_ERROR =
-  "Refusing to start HTTP transport: CONDUIT_S2S_SECRET is a known placeholder. " +
-  "Generate a secret with `openssl rand -hex 32` and set CONDUIT_S2S_SECRET to that value.";
+function weakS2sSecretError(problem: string): string {
+  return (
+    `Refusing to start HTTP transport: CONDUIT_S2S_SECRET ${problem}. ` +
+    "Generate a secret with `openssl rand -hex 32` and set CONDUIT_S2S_SECRET to that value."
+  );
+}
 
 const INSECURE_DEV_WARNING =
   "SECURITY WARNING: CONDUIT_S2S_SECRET is empty and MCP_ALLOW_INSECURE_DEV=1. " +
@@ -119,17 +145,18 @@ function isLoopbackBindHost(host: string): boolean {
 }
 
 /**
- * Fail closed. A known placeholder is never a configured secret, including
- * when MCP_ALLOW_INSECURE_DEV=1 is also set. Empty is the only case the dev
- * flag may bypass, and that bypass does not check X-Gateway-S2S.
- * The secret value is never written to logs.
+ * Fail closed. A placeholder, short, or low-entropy value is never a
+ * configured secret, including when MCP_ALLOW_INSECURE_DEV=1 is also set.
+ * Empty is the only case the dev flag may bypass, and that bypass does not
+ * check X-Gateway-S2S. The secret value is never written to logs.
  */
 function resolveHttpS2sSecret(): { secret: string; insecureDev: boolean } {
   const raw = (process.env.CONDUIT_S2S_SECRET ?? "").trim();
-  if (raw && KNOWN_PLACEHOLDER_SECRETS.has(raw.toLowerCase())) {
-    refuseStart(PLACEHOLDER_S2S_SECRET_ERROR);
+  if (raw) {
+    const problem = s2sSecretProblem(raw);
+    if (problem) refuseStart(weakS2sSecretError(problem));
+    return { secret: raw, insecureDev: false };
   }
-  if (raw) return { secret: raw, insecureDev: false };
   if (process.env.MCP_ALLOW_INSECURE_DEV === "1") {
     return { secret: "", insecureDev: true };
   }
@@ -163,21 +190,49 @@ const CORS_ALLOW_HEADERS = [
   ...GATEWAY_HEADERS,
 ].join(", ");
 
-/** stdio (default). Fresh server per process; env-mode credentials. */
+/** stdio (default). Fresh server per process; env-mode credentials (none in gateway mode). */
 function startStdioTransport(): void {
-  serveStdio(() => createMcpServer(resolveEnvCredentials().creds), {
+  configuredTiers(); // a DUBBER_TOOL_TIERS typo fails here, not on the first call
+  serveStdio(makeMcpServerFactory(), {
     onerror: (error) => logger.error("stdio serving error", { error: error.message }),
   });
   logger.info("Dubber MCP server running on stdio");
 }
 
+/** Validate AUTH_MODE, tool tiers, and env-mode credentials before listening. */
+function resolveStartupConfig(): { authMode: AuthMode; tiers: ReadonlySet<ToolTier> } {
+  let authMode: AuthMode;
+  let tiers: ReadonlySet<ToolTier>;
+  try {
+    authMode = parseAuthMode(process.env.AUTH_MODE);
+    tiers = configuredTiers();
+  } catch (error) {
+    refuseStart(`Refusing to start HTTP transport: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (authMode === "env") {
+    const { error } = resolveEnvCredentials();
+    if (error) refuseStart(`Refusing to start HTTP transport: AUTH_MODE=env requires DUBBER_* credentials. ${error}`);
+  }
+  return { authMode, tiers };
+}
+
+/** Raw tier header if present (even empty, which narrows to no tools); undefined if absent. */
+function tierHeader(req: IncomingMessage): string | undefined {
+  const raw = req.headers[TOOL_TIERS_HEADER];
+  if (raw === undefined) return undefined;
+  return Array.isArray(raw) ? raw.join(",") : raw;
+}
+
 export async function startHttpTransport(): Promise<HttpServer> {
   const { secret: s2sSecret, insecureDev } = resolveHttpS2sSecret();
+  const { authMode, tiers: configured } = resolveStartupConfig();
   const port = parseInt(process.env.MCP_HTTP_PORT || "8080", 10);
   const host = resolveBindHost(s2sSecret);
-  const isGatewayMode = process.env.AUTH_MODE === "gateway";
+  const isGatewayMode = authMode === "gateway";
+  // Irreversible: from here on no code path in this process reads DUBBER_* credentials.
+  if (isGatewayMode) lockGatewayMode();
 
-  const mcpHandler = createMcpHandler(makeMcpServerFactory({ gatewayMode: isGatewayMode }), {
+  const mcpHandler = createMcpHandler(makeMcpServerFactory(), {
     legacy: "stateless",
     onerror: (error) => logger.error("MCP serving error", { error: error.message }),
   });
@@ -231,8 +286,11 @@ export async function startHttpTransport(): Promise<HttpServer> {
       // falling through to env-configured credentials would serve the
       // operator's tenant data to whoever asked (cross-tenant leak).
       // Blank or repeated headers count as missing.
+      let credentials: DubberCredentials | undefined;
       if (isGatewayMode) {
-        const { error } = resolveGatewayCredentials((name) => singleGatewayHeader(req, name.toLowerCase()));
+        const resolved = resolveGatewayCredentials((name) => singleGatewayHeader(req, name.toLowerCase()));
+        const error = resolved.error;
+        credentials = resolved.creds;
         if (error) {
           res.writeHead(401, { "Content-Type": "application/json" });
           res.end(
@@ -250,9 +308,11 @@ export async function startHttpTransport(): Promise<HttpServer> {
         }
       }
 
-      // Per-request credential binding happens inside the factory (it reads
-      // the gateway headers from ctx.requestInfo on every request).
-      await handleMcpRequest(req, res);
+      // This request's credentials and tiers are bound for exactly the
+      // duration of this request; the factory and the logger read them from
+      // the request scope. X-Conduit-Tool-Tiers can only narrow.
+      const tiers = narrowTiers(configured, tierHeader(req));
+      await runInRequestScope({ credentials, tiers }, () => handleMcpRequest(req, res));
       return;
     }
 

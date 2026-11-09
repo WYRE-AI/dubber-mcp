@@ -8,12 +8,13 @@
  * walks the newest-first list with count=100 + before_id and applies
  * offset/limit/time filtering itself.
  */
-import type { DubberClient, Recording } from "@wyre-ai/node-dubber";
+import type { Recording } from "@wyre-ai/node-dubber";
+import type { DubberApi } from "../dubber-api.js";
 import {
   jsonResult,
   optionalInteger,
   optionalString,
-  requireString,
+  requireId,
   ToolInputError,
   type ToolResult,
 } from "./results.js";
@@ -34,22 +35,13 @@ export interface RecordingsPageParams {
   team?: string;
 }
 
-/**
- * The single place that talks to the SDK's recordings.list.
- *
- * @wyre-ai/node-dubber 1.0.0 types `list` params as `{ limit?, offset? }`, but
- * its HTTP layer copies every key verbatim into the query string at runtime.
- * We therefore cast ONCE here to send Dubber's real params. Once the node-dubber
- * release that types `count`/`before_id`/`query` is adopted, drop the cast and
- * pass `params` directly.
- */
+/** The single place that talks to the SDK's recordings.list (node-dubber >= 1.1.0 types Dubber's real params). */
 async function fetchRecordingsPage(
-  client: DubberClient,
+  client: DubberApi,
   accountId: string,
   params: RecordingsPageParams
 ): Promise<Recording[]> {
-  const loose = params as unknown as Parameters<DubberClient["recordings"]["list"]>[1];
-  return client.recordings.list(accountId, loose);
+  return client.recordings.list(accountId, params);
 }
 
 const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -135,8 +127,8 @@ function optionalId(args: Record<string, unknown>, key: string): string | undefi
   return raw.trim();
 }
 
-export async function listRecordings(client: DubberClient, args: Record<string, unknown>): Promise<ToolResult> {
-  const accountId = requireString(args, "accountId");
+export async function listRecordings(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
+  const accountId = requireId(args, "accountId");
   const limit = intInRange(args, "limit", 1, MAX_LIMIT, DEFAULT_LIMIT);
   const offset = intInRange(args, "offset", 0, Number.MAX_SAFE_INTEGER, 0);
 

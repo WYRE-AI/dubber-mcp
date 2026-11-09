@@ -1,15 +1,15 @@
 /**
- * WYREAI-567: dubber_recordings_list against a REAL DubberClient (real SDK
- * 1.0.0 HTTP layer + token provider) with only `fetch` mocked. The fake Dubber
- * honours count/before_id/after_id/query and, like the real API, silently
- * IGNORES anything else (limit, offset, page, ...).
+ * WYREAI-567: dubber_recordings_list against the REAL guarded client
+ * (dubber-api.ts transport + node-dubber resources + token cache) with only
+ * `fetch` mocked. The fake Dubber honours count/before_id/after_id/query and,
+ * like the real API, silently IGNORES anything else (limit, offset, page, ...).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DubberClient, TokenCache } from "@wyre-ai/node-dubber";
+import { createDubberApi, type DubberApi } from "../dubber-api.js";
 import { handleToolCall } from "../handlers/index.js";
 import type { ToolResult } from "../handlers/results.js";
 
-const BASE_URL = "https://api.test.invalid/sandbox/v1";
+const BASE_URL = "https://api.dubber.net/sandbox/v1";
 const ACCOUNT = "acc-1";
 const STEP_MS = 15 * 60_000;
 // Newest recording: Sun 25 Oct 2026 23:45 +10:00; each older one is 15 minutes earlier.
@@ -88,16 +88,14 @@ function installFakeDubber(all: FakeRec[]): FakeDubber {
 }
 
 let seq = 0;
-function realClient(): DubberClient {
+function realClient(): DubberApi {
   seq += 1;
-  return new DubberClient({
+  return createDubberApi({
     clientId: `test-client-${seq}`, // unique -> unique token-cache key, no cross-test leakage
     clientSecret: "fake-secret",
     authId: "fake-auth-id",
     authToken: "fake-auth-token",
-    baseUrl: BASE_URL,
-    maxRetries: 0,
-    tokenCache: new TokenCache(),
+    region: "sandbox",
   });
 }
 
@@ -114,7 +112,7 @@ interface ListResult {
   filters: Record<string, unknown>;
 }
 
-async function list(client: DubberClient, args: Record<string, unknown>): Promise<ListResult> {
+async function list(client: DubberApi, args: Record<string, unknown>): Promise<ListResult> {
   const result = (await handleToolCall(client, "dubber_recordings_list", { accountId: ACCOUNT, ...args })) as ToolResult;
   const first = result.content[0]!;
   if (result.isError) throw new Error(first.type === "text" ? first.text : "tool error");
@@ -123,7 +121,7 @@ async function list(client: DubberClient, args: Record<string, unknown>): Promis
 
 const ids = (r: ListResult) => r.recordings.map((x) => x.id);
 
-describe("dubber_recordings_list paging (real DubberClient, mocked fetch)", () => {
+describe("dubber_recordings_list paging (real guarded client, mocked fetch)", () => {
   let all: FakeRec[];
   let fake: FakeDubber;
 

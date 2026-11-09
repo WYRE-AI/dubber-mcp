@@ -1,25 +1,39 @@
-import type { DubberClient } from "@wyre-ai/node-dubber";
-import { jsonResult, optionalObject, requireObject, requireString, type ToolHandler, type ToolResult } from "./results.js";
+import type { DubberApi } from "../dubber-api.js";
+import {
+  jsonResult,
+  optionalObject,
+  requireId,
+  requireObject,
+  ToolInputError,
+  type ToolHandler,
+  type ToolResult,
+} from "./results.js";
 
-async function list(client: DubberClient, args: Record<string, unknown>): Promise<ToolResult> {
-  const dubPoints = await client.dubPoints.list(requireString(args, "accountId"));
+async function list(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
+  const dubPoints = await client.dubPoints.list(requireId(args, "accountId"));
   if (dubPoints.length === 0) return jsonResult({ dub_points: [], note: "No Dub.Point connections." });
   return jsonResult(dubPoints);
 }
 
-async function create(client: DubberClient, args: Record<string, unknown>): Promise<ToolResult> {
-  const accountId = requireString(args, "accountId");
+async function create(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
+  const accountId = requireId(args, "accountId");
   const data = optionalObject(args, "data") ?? {};
   return jsonResult(await client.dubPoints.create(accountId, data));
 }
 
-async function get(client: DubberClient, args: Record<string, unknown>): Promise<ToolResult> {
-  return jsonResult(await client.dubPoints.get(requireString(args, "dubPointId")));
+async function get(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
+  return jsonResult(await client.dubPoints.get(requireId(args, "dubPointId")));
 }
 
-async function find(client: DubberClient, args: Record<string, unknown>): Promise<ToolResult> {
+async function find(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
   const query = requireObject(args, "query");
-  const stringQuery = Object.fromEntries(Object.entries(query).map(([k, v]) => [k, String(v)]));
+  const stringQuery: Record<string, string> = {};
+  for (const [key, value] of Object.entries(query)) {
+    if (!["string", "number", "boolean"].includes(typeof value)) {
+      throw new ToolInputError(`Argument "query.${key}" must be a string, number, or boolean.`);
+    }
+    stringQuery[key] = String(value);
+  }
   const dubPoints = await client.dubPoints.find(stringQuery);
   if (dubPoints.length === 0) return jsonResult({ dub_points: [], note: "No matching Dub.Point found." });
   return jsonResult(dubPoints);

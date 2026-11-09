@@ -1,8 +1,8 @@
 /** Tool-surface contract tests: count, names, order, schemas, warnings, annotations. */
 import { describe, expect, it } from "vitest";
+import { ALL_TIERS } from "../config.js";
 import { CONFIRM_ARG } from "../elicitation.js";
-import { listToolsResult } from "../mcp-server.js";
-import { TOOLS, TOOL_NAMES } from "../tools/index.js";
+import { TOOLS, TOOL_NAMES, toolTier, toolsForTiers } from "../tools/index.js";
 
 /** docs/DESIGN.md §1.1 order — the single source of truth for the surface. */
 const EXPECTED_ORDER = [
@@ -67,6 +67,8 @@ const UNGATED_WRITES = new Set([
   "dubber_recordings_update_metadata",
   "dubber_recordings_add_tags",
   "dubber_recordings_initiate_multipart_upload",
+  // A GET, but its result is a credential to write audio: write tier.
+  "dubber_recordings_get_upload_target",
   "dubber_recordings_complete_upload",
   "dubber_users_create",
   "dubber_users_update",
@@ -99,9 +101,10 @@ describe("tool surface", () => {
     for (const name of TOOL_NAMES) expect(name).toMatch(/^dubber_[a-z_]+$/);
   });
 
-  it("returns the same TOOLS reference on each listToolsResult() call", () => {
-    expect(listToolsResult().tools).toBe(TOOLS);
-    expect(listToolsResult().tools).toBe(listToolsResult().tools);
+  it("returns the same array for the same tiers, in TOOLS order", () => {
+    const all = new Set(ALL_TIERS);
+    expect(toolsForTiers(all)).toEqual(TOOLS);
+    expect(toolsForTiers(new Set(["read"]))).toBe(toolsForTiers(new Set(["read"])));
   });
 
   it("every tool has a description and an object inputSchema", () => {
@@ -159,6 +162,25 @@ describe("tool surface", () => {
       expect(tool(name).description, name).not.toContain("⚠");
       expect(schemaOf(name).properties?.[CONFIRM_ARG], name).toBeUndefined();
     }
+  });
+
+  it("tiers follow Conduit's annotation rule: 16 read, 16 write, 5 admin", () => {
+    const reads = EXPECTED_ORDER.filter((n) => !(n in GATED) && !UNGATED_WRITES.has(n));
+    for (const name of reads) expect(toolTier(tool(name)), name).toBe("read");
+    for (const name of UNGATED_WRITES) expect(toolTier(tool(name)), name).toBe("write");
+    for (const name of Object.keys(GATED)) expect(toolTier(tool(name)), name).toBe("admin");
+    expect([reads.length, UNGATED_WRITES.size, Object.keys(GATED).length]).toEqual([16, 16, 5]);
+  });
+
+  it("dubber_recordings_get documents the signed recording link as a secret", () => {
+    const t = tool("dubber_recordings_get");
+    expect(Object.keys(schemaOf("dubber_recordings_get").properties ?? {})).toEqual([
+      "recordingId",
+      "listener",
+      "contentDisposition",
+    ]);
+    expect(t.description).toMatch(/recording_url/);
+    expect(t.description).toMatch(/never logs or caches/);
   });
 
   it("required arguments match the design table for a representative sample", () => {
