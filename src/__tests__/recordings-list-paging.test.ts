@@ -327,6 +327,17 @@ describe("dubber_recordings_list paging (real guarded client, mocked fetch)", ()
     expect(ids(r)).toEqual(inWindow.slice(100, 105).map((x) => x.id));
   });
 
+  it("stopping early at a page older than startTimeFrom names the assumed order and a cursor to look further back", async () => {
+    // all[0..50] match; page 2 (all[100..199]) is entirely older, so the scan stops there.
+    const r = await list(realClient(), { startTimeFrom: new Date(all[50]!.ms).toISOString(), limit: 500 });
+    expect(r.returned).toBe(51);
+    expect(r.requests).toBe(2);
+    expect(r.hasMore).toBe(false);
+    expect(r.nextCursor).toBeNull();
+    expect(r.note).toContain("newest first by start_time");
+    expect(r.note).toContain(`cursor="${all[199]!.id}"`);
+  });
+
   it("reports an empty window and counts unparseable start_time", async () => {
     all[3]!.start_time = "not a date";
     const r = await list(realClient(), { startTimeFrom: "2030-01-01", limit: 10 });

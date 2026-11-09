@@ -178,6 +178,7 @@ export async function listRecordings(client: DubberApi, args: Record<string, unk
   let nextCursor: string | null = null;
   let scanCapReached = false;
   let rateLimited: string | undefined;
+  let stoppedOlderAt: string | undefined;
 
   paging: for (;;) {
     const params: RecordingsPageParams = { count: DUBBER_PAGE_SIZE };
@@ -236,7 +237,12 @@ export async function listRecordings(client: DubberApi, args: Record<string, unk
     if (typeof lastId !== "string" || lastId === "") {
       throw new Error("Dubber returned a recording without an id, so the list cannot be paged further.");
     }
-    if (pageAllBeforeFrom) break; // everything further back is older than startTimeFrom
+    if (pageAllBeforeFrom) {
+      // Everything further back is older than startTimeFrom, IF Dubber lists newest first by
+      // start_time. Its docs do not state the order, so the note offers a cursor to check.
+      stoppedOlderAt = lastId;
+      break;
+    }
     if (requests >= MAX_REQUESTS_PER_CALL) {
       scanCapReached = true;
       hasMore = true;
@@ -260,6 +266,13 @@ export async function listRecordings(client: DubberApi, args: Record<string, unk
     note = `More recordings may exist. Call again with cursor="${nextCursor}" and offset=${toSkip} (same filters) to continue.`;
   } else if (recordings.length === 0) {
     note = "No recordings found.";
+  }
+  if (stoppedOlderAt !== undefined) {
+    const extra =
+      "Stopped at a full page of recordings all older than startTimeFrom, assuming Dubber lists newest first " +
+      "by start_time (its docs do not state the order). To check further back anyway, call again with " +
+      `cursor="${stoppedOlderAt}" and offset=${toSkip} (same filters).`;
+    note = note ? `${note} ${extra}` : extra;
   }
   if (timeFiltered && unparseable > 0) {
     const extra = `${unparseable} examined recording(s) had an unparseable start_time and were excluded by the time filter.`;

@@ -77,6 +77,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   401 for "no access to this resource", and re-minting spent its ~500 mints/day budget.
 - The 401 hint says the cause can be wrong credentials or a token without access to the
   resource (such as unidentified dub points, which need a group-level token).
+- `dubber_recordings_list` says its newest-first order by `start_time` is assumed (Dubber's
+  docs do not state the sort key). When a time-filtered scan stops at a full page older than
+  `startTimeFrom`, the note now gives a cursor to check further back. The description also
+  says to wait for the quota reset when a rate limit is the daily one.
 - Key-name redaction also covers generic credential names: any key ending in `token`, `key`,
   `secret` or `password` (such as `token`, `api_key`, `signing_key`, `hmac_key`,
   `webhook_secret`), plus `hmac`. Ids, `token_type` and `recording_url` are still returned.

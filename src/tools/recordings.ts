@@ -9,7 +9,9 @@ export const RECORDINGS_TOOLS: Tool[] = [
   {
     name: "dubber_recordings_list",
     description:
-      `List call recordings for a Dubber account, NEWEST FIRST. \`limit\` (default 100, max ${MAX_LIMIT}) is the max ` +
+      "List call recordings for a Dubber account, NEWEST FIRST (as Dubber returns them; its docs do not state " +
+      "the sort key, so with startTimeFrom the scan stops at a full page older than it and the note gives a " +
+      `cursor to check further back). \`limit\` (default 100, max ${MAX_LIMIT}) is the max ` +
       "matching recordings to return; `offset` skips that many matching recordings from the newest. " +
       "If the result has hasMore=true, call again with cursor=<nextCursor> and offset=<remainingOffset> (same filters; " +
       "remainingOffset is 0 unless the call stopped while still skipping) to continue with no gaps or duplicates. " +
@@ -19,7 +21,7 @@ export const RECORDINGS_TOOLS: Tool[] = [
       `applied by this server after fetching pages (each tool call scans at most ${MAX_SCANNED.toLocaleString("en-US")} ` +
       `recordings / ${MAX_REQUESTS_PER_CALL} Dubber requests; scanCapReached=true means continue with nextCursor; ` +
       "rateLimited=true means Dubber's rate limit stopped the scan early, so wait a few seconds and continue with " +
-      "nextCursor). startTimeFrom is inclusive; " +
+      "nextCursor, or, if the note says daily, wait for the daily quota reset). startTimeFrom is inclusive; " +
       "startTimeTo is EXCLUSIVE for date-times, but a date-only startTimeTo includes that whole day. " +
       "Dates without an offset are UTC, so pass explicit offsets for local weeks. Example, Mon–Fri week " +
       "in Melbourne daylight time (AEDT, +11:00): startTimeFrom=2026-10-19T00:00:00+11:00, startTimeTo=2026-10-24T00:00:00+11:00, limit=500 " +
