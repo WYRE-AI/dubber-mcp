@@ -285,6 +285,8 @@ class GuardedHttp {
 export interface ConnectionTestResult {
   ok: boolean;
   error?: string;
+  status?: number;
+  requestId?: string;
 }
 
 /**
@@ -324,6 +326,15 @@ export function createDubberApi(creds: DubberCredentials): DubberApi {
         await getToken(creds);
         return { ok: true };
       } catch (err) {
+        if (err instanceof DubberError) {
+          const e = err as DubberApiError;
+          return {
+            ok: false,
+            error: e.message,
+            ...(e.statusCode ? { status: e.statusCode } : {}),
+            ...(e.requestId ? { requestId: e.requestId } : {}),
+          };
+        }
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
