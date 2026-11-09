@@ -112,3 +112,22 @@ decisions: `docs/DESIGN.md`.
   npmrc maps only `@wyre-technology`, and the Dockerfile mounts that file over `/app/.npmrc`,
   so `@wyre-ai/node-dubber` would not resolve; it also runs `npm ci` without
   `--ignore-scripts`. `ci.yml` copies its process.env credential-mutation guard instead.
+
+## Learnings - 2026-11-09 (review round 2)
+
+- **`maxToolInputElements` (the GHSA-46jr-4wx8-v453 cap) is an `McpServer` option only.** The
+  low-level `Server` used here has no such option and this server never schema-validates tool
+  arguments, so the SDK bump (server/core 2.4.0, node 2.1.2, zod 4.6.7) is the whole fix.
+- **Dubber answers 401 for "no access to this resource" too** (HTTP_Responses page; e.g.
+  unidentified dub points need a group-level token). Only a 401 on a *cached* token re-mints;
+  re-minting after a fresh token's 401 spent the ~500 mints/day budget.
+- **Output cap: trim lists by item, never cut the JSON.** `listResult` (handlers/results.ts)
+  drops items from the end and lets each tool rewrite its paging fields; the string cut in
+  `mcp-server.ts` runs after redaction and only for a lone oversized item. Paging fields are
+  serialized ahead of the list so even that cut keeps them.
+- **Still not live-verified** (no sandbox credentials): the recordings sort key (the scan's
+  early stop assumes newest first by `start_time` and says so), and whether
+  `/notifications/:id` or `/accounts/notifications/:id` is the live path (the docs page shows
+  both; the code uses the documented `/notifications/:id`).
+- **Fleet follow-up, not this repo:** `wyre-technology/.github` `mcp-assert.yml` (pinned here at
+  `06856d54`) runs plain `npm ci` and checks out without `persist-credentials: false`.
