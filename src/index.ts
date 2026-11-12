@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Dubber MCP server — flat tool surface over groups, accounts, recordings,
- * users, profile, notifications (REST hooks), Dub.Point, and OAuth.
+ * users, profile, notifications (REST hooks) and Dub.Point.
  *
  * Transports:
  * - stdio (default): local Claude Desktop / CLI usage. `serveStdio` owns the

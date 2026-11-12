@@ -85,7 +85,7 @@ describe("malformed request targets and Host headers", () => {
 
   it("Host: [ on /health does not crash the process", async () => {
     const response = await rawRequest("GET /health HTTP/1.1\r\nHost: [\r\nConnection: close\r\n\r\n");
-    if (response !== "") expect(statusOf(response)).toBeGreaterThanOrEqual(200);
+    expect(statusOf(response)).toBe(200);
 
     const health = await fetch(`http://127.0.0.1:${port}/health`);
     expect(health.status).toBe(200);

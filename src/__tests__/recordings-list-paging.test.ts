@@ -323,6 +323,18 @@ describe("dubber_recordings_list paging (real guarded client, mocked fetch)", ()
     });
   });
 
+  it("a malformed bound is refused with a late-October example that uses +11:00", async () => {
+    const result = (await handleToolCall(realClient(), "dubber_recordings_list", {
+      accountId: ACCOUNT,
+      startTimeFrom: "19/10/2026",
+    })) as ToolResult;
+    expect(result.isError).toBe(true);
+    const text = JSON.stringify(result.content);
+    expect(text).toContain("2026-10-19T09:00:00+11:00");
+    expect(text).not.toContain("+10:00");
+    expect(fake.requests).toHaveLength(0);
+  });
+
   it("rejects the removed query argument and names the filters that replace it, without fetching", async () => {
     const result = (await handleToolCall(realClient(), "dubber_recordings_list", {
       accountId: ACCOUNT,

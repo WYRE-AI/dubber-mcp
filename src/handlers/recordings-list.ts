@@ -76,7 +76,7 @@ function parseBound(key: string, raw: string): ParsedBound {
   const bad = () =>
     new ToolInputError(
       `Argument "${key}" must be an ISO 8601 date (2026-10-19) or date-time ` +
-        `(2026-10-19T09:00:00+10:00); got "${raw}".`
+        `(2026-10-19T09:00:00+11:00); got "${raw}".`
     );
   const dateOnly = DATE_ONLY.exec(value);
   if (dateOnly) {
