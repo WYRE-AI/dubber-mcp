@@ -275,14 +275,18 @@ export async function startHttpTransport(): Promise<HttpServer> {
   // No CORS headers: only Conduit calls this server, server to server. A
   // browser page must never be able to reach /mcp (e.g. a dev server on
   // 127.0.0.1 without S2S), so preflights fall through to the S2S gate.
-  const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-    const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  const route = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    // Route on the raw path. Building a URL from the request target and the Host
+    // header throws on input such as "//[" or "Host: [", and this runs before
+    // the Host allowlist and the S2S gate, so any anonymous caller could crash
+    // the process with it.
+    const path = (req.url || "/").split("?")[0];
 
     // Health endpoint — shallow, unauthenticated liveness probe. Must NOT
     // touch credentials or any upstream: in gateway mode credentials only
     // arrive per-request via headers, so a credential check here would
     // always fail and crash-loop the container.
-    if (url.pathname === "/health" || url.pathname === "/healthz") {
+    if (path === "/health" || path === "/healthz") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({
@@ -311,7 +315,7 @@ export async function startHttpTransport(): Promise<HttpServer> {
       return;
     }
 
-    if (url.pathname === "/mcp") {
+    if (path === "/mcp") {
       // 401 gate: reject unauthenticated gateway traffic BEFORE serving —
       // falling through to env-configured credentials would serve the
       // operator's tenant data to whoever asked (cross-tenant leak).
@@ -350,6 +354,24 @@ export async function startHttpTransport(): Promise<HttpServer> {
 
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Not found", endpoints: ["/mcp", "/health"] }));
+  };
+
+  // An async handler's rejection is unhandled and exits Node, so nothing may escape it.
+  // Only the error message is logged: never request headers or bodies.
+  const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    try {
+      await route(req, res);
+    } catch (error) {
+      logger.error("Unhandled error while serving a request", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (res.headersSent) {
+        res.end();
+      } else {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Internal server error" }));
+      }
+    }
   });
 
   await new Promise<void>((resolve, reject) => {
