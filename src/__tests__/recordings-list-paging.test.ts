@@ -13,11 +13,12 @@ import type { ToolResult } from "../handlers/results.js";
 const BASE_URL = "https://api.dubber.net/sandbox/v1";
 const ACCOUNT = "acc-1";
 const STEP_MS = 15 * 60_000;
-// Newest recording: Sun 25 Oct 2026 23:45 +10:00; each older one is 15 minutes earlier.
-const NEWEST_MS = Date.parse("2026-10-25T23:45:00+10:00");
-// Mon 19 Oct 00:00 +10:00 .. Sat 24 Oct 00:00 +10:00 (exclusive) = Mon–Fri.
-const WEEK_FROM = "2026-10-19T00:00:00+10:00";
-const WEEK_TO = "2026-10-24T00:00:00+10:00";
+// Melbourne is on daylight time (+11:00) in late October.
+// Newest recording: Sun 25 Oct 2026 23:45 +11:00; each older one is 15 minutes earlier.
+const NEWEST_MS = Date.parse("2026-10-25T23:45:00+11:00");
+// Mon 19 Oct 00:00 +11:00 .. Sat 24 Oct 00:00 +11:00 (exclusive) = Mon–Fri.
+const WEEK_FROM = "2026-10-19T00:00:00+11:00";
+const WEEK_TO = "2026-10-24T00:00:00+11:00";
 
 interface FakeRec {
   id: string;
@@ -28,9 +29,9 @@ interface FakeRec {
   ms: number;
 }
 
-/** RFC 2822 in +1000, e.g. "Mon, 19 Oct 2026 09:00:00 +1000". */
+/** RFC 2822 in +1100, e.g. "Mon, 19 Oct 2026 09:00:00 +1100". */
 function rfc2822(ms: number): string {
-  return new Date(ms + 10 * 3_600_000).toUTCString().replace("GMT", "+1000");
+  return new Date(ms + 11 * 3_600_000).toUTCString().replace("GMT", "+1100");
 }
 
 function dataset(n: number): FakeRec[] {
@@ -143,8 +144,7 @@ describe("dubber_recordings_list paging (real guarded client, mocked fetch)", ()
 
   it("never sends limit/offset (or any undocumented param) to Dubber", async () => {
     const client = realClient();
-    await list(client, { limit: 250, offset: 40, query: "6140", startTimeFrom: WEEK_FROM });
-    // `query` is not a documented Dubber param, so it is never sent (and not an input).
+    await list(client, { limit: 250, offset: 40, startTimeFrom: WEEK_FROM });
     expect(fake.requests.length).toBeGreaterThan(0);
     for (const url of fake.requests) {
       expect(url.searchParams.has("limit")).toBe(false);
@@ -281,6 +281,62 @@ describe("dubber_recordings_list paging (real guarded client, mocked fetch)", ()
       limit: 500,
     });
     expect(ids(exclusive)).toEqual(expected);
+  });
+
+  describe("bounds without a UTC offset", () => {
+    const UTC_NOTE = "had no UTC offset and were interpreted as UTC (see filters)";
+
+    it("a date-only bound is read as UTC (not Melbourne time) and says so", async () => {
+      // 2026-10-23 UTC is 11:00 on the 23rd to 11:00 on the 24th in Melbourne, so it differs from the local day.
+      const r = await list(realClient(), { startTimeFrom: "2026-10-23", startTimeTo: "2026-10-23", limit: 500 });
+      expect(r.filters["startTimeFrom"]).toBe("2026-10-23T00:00:00.000Z");
+      expect(r.filters["startTimeToExclusive"]).toBe("2026-10-24T00:00:00.000Z");
+      expect(r.note).toContain("startTimeFrom/startTimeTo");
+      expect(r.note).toContain(UTC_NOTE);
+      expect(r.note).toContain("pass an explicit offset such as +11:00 for a local-time window.");
+    });
+
+    it("a date-time without an offset says so", async () => {
+      const r = await list(realClient(), { startTimeFrom: "2026-10-23T09:00:00", limit: 5 });
+      expect(r.filters["startTimeFrom"]).toBe("2026-10-23T09:00:00.000Z");
+      expect(r.note).toContain(UTC_NOTE);
+    });
+
+    it("one offsetless bound is enough, even next to an explicit one", async () => {
+      const r = await list(realClient(), { startTimeFrom: WEEK_FROM, startTimeTo: "2026-10-24", limit: 5 });
+      expect(r.note).toContain(UTC_NOTE);
+    });
+
+    it("the note is kept when the result is trimmed to fit the response limit", async () => {
+      const r = await list(realClient(), { startTimeFrom: "2026-10-19", startTimeTo: "2026-10-24", limit: 500 });
+      expect(r.hasMore).toBe(true);
+      expect(r.note).toContain("response limit");
+      expect(r.note).toContain(UTC_NOTE);
+    });
+
+    it.each([
+      ["a numeric offset", { startTimeFrom: WEEK_FROM, startTimeTo: WEEK_TO }],
+      ["Z", { startTimeFrom: "2026-10-23T00:00:00Z", startTimeTo: "2026-10-24T00:00:00z" }],
+    ])("%s adds no note", async (_label, bounds) => {
+      const r = await list(realClient(), { ...bounds, limit: 5 });
+      expect(r.note ?? "").not.toContain("UTC offset");
+    });
+  });
+
+  it("rejects the removed query argument and names the filters that replace it, without fetching", async () => {
+    const result = (await handleToolCall(realClient(), "dubber_recordings_list", {
+      accountId: ACCOUNT,
+      query: "6140",
+    })) as ToolResult;
+    expect(result.isError).toBe(true);
+    const text = JSON.stringify(result.content);
+    expect(text).toContain("query");
+    expect(text).toContain("was removed");
+    for (const replacement of ["dubPointId", "teamId", "startTimeFrom", "startTimeTo"]) {
+      expect(text).toContain(replacement);
+    }
+    expect(fake.requests).toHaveLength(0);
+    expect(fake.tokenCalls).toBe(0);
   });
 
   it("nextCursor resumes with no gaps or duplicates (unfiltered)", async () => {

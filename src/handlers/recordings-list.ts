@@ -56,7 +56,13 @@ interface ParsedBound {
   /** epoch ms of the bound */
   ms: number;
   dateOnly: boolean;
+  /** No UTC offset was given (a date-only bound, or a date-time without Z or +hh:mm), so UTC was assumed. */
+  assumedUtc: boolean;
 }
+
+const ASSUMED_UTC_NOTE =
+  "startTimeFrom/startTimeTo had no UTC offset and were interpreted as UTC (see filters); " +
+  "pass an explicit offset such as +11:00 for a local-time window.";
 
 /** True when y-m-d is a real calendar date (rejects 2026-02-31). */
 function validYmd(y: number, m: number, d: number): boolean {
@@ -76,7 +82,7 @@ function parseBound(key: string, raw: string): ParsedBound {
   if (dateOnly) {
     const [y, m, d] = [Number(dateOnly[1]), Number(dateOnly[2]), Number(dateOnly[3])];
     if (!validYmd(y, m, d)) throw bad();
-    return { ms: Date.UTC(y, m - 1, d), dateOnly: true };
+    return { ms: Date.UTC(y, m - 1, d), dateOnly: true, assumedUtc: true };
   }
   const dt = DATE_TIME.exec(value);
   if (!dt) throw bad();
@@ -94,7 +100,11 @@ function parseBound(key: string, raw: string): ParsedBound {
   }
   const fractional = /\.(\d{1,9})/.exec(value)?.[1];
   const ms = fractional ? Number(`0.${fractional}`) * 1000 : 0;
-  return { ms: Date.UTC(y, m - 1, d, hh, mm, ss) + Math.floor(ms) - offsetMin * 60_000, dateOnly: false };
+  return {
+    ms: Date.UTC(y, m - 1, d, hh, mm, ss) + Math.floor(ms) - offsetMin * 60_000,
+    dateOnly: false,
+    assumedUtc: zone === undefined,
+  };
 }
 
 /** Recording start_time (RFC 2822, e.g. "Sun, 28 Jul 2013 12:42:10 +1000") -> epoch ms, or undefined. */
@@ -133,6 +143,12 @@ function optionalId(args: Record<string, unknown>, key: string): string | undefi
 }
 
 export async function listRecordings(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
+  if (args["query"] !== undefined) {
+    throw new ToolInputError(
+      'Argument "query" was removed: Dubber has no text search on recordings, so it would be silently ignored and ' +
+        "every recording returned. Filter with dubPointId, teamId, startTimeFrom and startTimeTo instead."
+    );
+  }
   const accountId = requireId(args, "accountId");
   const limit = intInRange(args, "limit", 1, MAX_LIMIT, DEFAULT_LIMIT);
   const offset = intInRange(args, "offset", 0, Number.MAX_SAFE_INTEGER, 0);
@@ -278,6 +294,8 @@ export async function listRecordings(client: DubberApi, args: Record<string, unk
     const extra = `${unparseable} examined recording(s) had an unparseable start_time and were excluded by the time filter.`;
     note = note ? `${note} ${extra}` : extra;
   }
+  const assumedUtc = from?.assumedUtc === true || to?.assumedUtc === true;
+  if (assumedUtc) note = note ? `${note} ${ASSUMED_UTC_NOTE}` : ASSUMED_UTC_NOTE;
 
   const fields = {
     hasMore,
@@ -302,11 +320,12 @@ export async function listRecordings(client: DubberApi, args: Record<string, unk
   // Too long for one result: keep the newest recordings and resume after the last one kept.
   return listResult(fields, "recordings", recordings, (kept, total) => {
     const cursor = (kept[kept.length - 1] as Recording).id;
+    const trimmed = trimNote(kept.length, total, `Call again with cursor="${cursor}" and offset=0 (same filters) to continue.`);
     return {
       hasMore: true,
       nextCursor: cursor,
       remainingOffset: 0,
-      note: trimNote(kept.length, total, `Call again with cursor="${cursor}" and offset=0 (same filters) to continue.`),
+      note: assumedUtc ? `${trimmed} ${ASSUMED_UTC_NOTE}` : trimmed,
     };
   });
 }
