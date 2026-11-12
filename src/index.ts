@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Dubber MCP server — flat tool surface over groups, accounts, recordings,
- * users, profile, notifications (REST hooks), Dub.Point, and OAuth.
+ * users, profile, notifications (REST hooks) and Dub.Point.
  *
  * Transports:
  * - stdio (default): local Claude Desktop / CLI usage. `serveStdio` owns the
@@ -15,17 +15,18 @@
  * - DUBBER_CLIENT_ID / DUBBER_CLIENT_SECRET (required; Mashery app key/secret)
  * - DUBBER_AUTH_ID / DUBBER_AUTH_TOKEN (required; Dubber portal API tab)
  * - DUBBER_REGION (optional; default "sandbox")
- * - DUBBER_BASE_URL (optional; env mode only, overrides region)
  * Or via gateway headers (AUTH_MODE=gateway):
  * - X-Dubber-Client-Id / X-Dubber-Client-Secret (required)
  * - X-Dubber-Auth-Id / X-Dubber-Auth-Token (required)
- * - X-Dubber-Region (optional; default "sandbox")
+ * - X-Dubber-Region (optional; default "sandbox" only when absent; blank or repeated is a 401)
  *
  * HTTP transport refuses to start unless CONDUIT_S2S_SECRET is set to a
  * value that is not a known placeholder. MCP_ALLOW_INSECURE_DEV=1 is a
  * local-only escape hatch for an empty secret: it logs a warning, does not
  * enforce X-Gateway-S2S, and listens on 127.0.0.1 only. A configured secret
- * honors MCP_HTTP_HOST (default 0.0.0.0 when unset). /health and /healthz
+ * honors MCP_HTTP_HOST (default 0.0.0.0 when unset). MCP_ALLOWED_HOSTS (optional;
+ * localhost,127.0.0.1 by default under MCP_ALLOW_INSECURE_DEV=1) answers 403 to
+ * any other Host header, before the S2S gate. /health and /healthz
  * stay unauthenticated and do not read credentials. stdio does not use S2S.
  */
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
@@ -33,14 +34,22 @@ import { createMcpHandler } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import {
-  GATEWAY_HEADERS,
+  configuredTiers,
+  lockGatewayMode,
+  narrowTiers,
+  parseAuthMode,
+  TOOL_TIERS_HEADER,
+  type AuthMode,
+  type ToolTier,
+} from "./config.js";
+import {
   REQUIRED_GATEWAY_HEADERS,
-  SERVER_VERSION,
-  createMcpServer,
-  makeMcpServerFactory,
   resolveEnvCredentials,
   resolveGatewayCredentials,
-} from "./mcp-server.js";
+  type DubberCredentials,
+} from "./credentials.js";
+import { SERVER_VERSION, makeMcpServerFactory } from "./mcp-server.js";
+import { runInRequestScope } from "./request-scope.js";
 import { logger } from "./utils/logger.js";
 import { verifyS2sHeader, S2S_HEADER } from "./s2s-verify.js";
 
@@ -59,7 +68,22 @@ const KNOWN_PLACEHOLDER_SECRETS = new Set([
   "example",
   "replace-me",
   "s2s-secret",
+  "conduit-s2s-secret",
+  "replace-with-openssl-rand-hex-32",
 ]);
+
+export const MIN_S2S_SECRET_LENGTH = 32;
+
+/** Placeholder, too short, or a short repeated pattern. Null when the secret is usable. */
+export function s2sSecretProblem(secret: string): string | null {
+  if (KNOWN_PLACEHOLDER_SECRETS.has(secret.toLowerCase())) return "is a known placeholder";
+  // ^s2s-test: the prefix this repo's tests once committed as a fixture (now generated per run).
+  if (/replace|changeme|change-me|placeholder|example|your-?secret|^s2s-test/i.test(secret)) return "looks like a placeholder";
+  if (secret.length < MIN_S2S_SECRET_LENGTH) return `is shorter than ${MIN_S2S_SECRET_LENGTH} characters`;
+  if (/^(.{1,8}?)\1+$/.test(secret)) return "is a repeated character pattern";
+  if (new Set(secret).size < 8) return "has too few distinct characters";
+  return null;
+}
 
 const LOOPBACK_HOST = "127.0.0.1";
 
@@ -68,9 +92,12 @@ const MISSING_S2S_SECRET_ERROR =
   "Set CONDUIT_S2S_SECRET to the gateway-provisioned secret (openssl rand -hex 32), " +
   "or set MCP_ALLOW_INSECURE_DEV=1 for local development only.";
 
-const PLACEHOLDER_S2S_SECRET_ERROR =
-  "Refusing to start HTTP transport: CONDUIT_S2S_SECRET is a known placeholder. " +
-  "Generate a secret with `openssl rand -hex 32` and set CONDUIT_S2S_SECRET to that value.";
+function weakS2sSecretError(problem: string): string {
+  return (
+    `Refusing to start HTTP transport: CONDUIT_S2S_SECRET ${problem}. ` +
+    "Generate a secret with `openssl rand -hex 32` and set CONDUIT_S2S_SECRET to that value."
+  );
+}
 
 const INSECURE_DEV_WARNING =
   "SECURITY WARNING: CONDUIT_S2S_SECRET is empty and MCP_ALLOW_INSECURE_DEV=1. " +
@@ -93,18 +120,36 @@ function headerValue(value: string | string[] | undefined): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-/**
- * Read a gateway credential header that must appear exactly once. Node joins
- * repeated headers with ", " in req.headers, which would turn two credentials
- * into one comma-joined value, so count occurrences in rawHeaders first.
- */
-function singleGatewayHeader(req: IncomingMessage, lowerName: string): string | undefined {
+function headerOccurrences(req: IncomingMessage, lowerName: string): number {
   let occurrences = 0;
   for (let index = 0; index < req.rawHeaders.length; index += 2) {
     if (req.rawHeaders[index]?.toLowerCase() === lowerName) occurrences += 1;
   }
-  if (occurrences !== 1) return undefined;
+  return occurrences;
+}
+
+/**
+ * Read a gateway credential header that must appear exactly once. Node joins
+ * repeated headers with ", " in req.headers, which would turn two credentials
+ * into one comma-joined value, so count occurrences in rawHeaders first.
+ * A required header that is repeated or blank reads as missing.
+ */
+function singleGatewayHeader(req: IncomingMessage, lowerName: string): string | undefined {
+  if (headerOccurrences(req, lowerName) !== 1) return undefined;
   return headerValue(req.headers[lowerName]);
+}
+
+/**
+ * The optional X-Dubber-Region header. Only an absent header may fall back to
+ * the default region; a repeated or blank one is returned as "" so credential
+ * validation rejects it instead of silently using sandbox.
+ */
+function regionHeader(req: IncomingMessage): string | undefined {
+  const occurrences = headerOccurrences(req, "x-dubber-region");
+  if (occurrences === 0) return undefined;
+  if (occurrences > 1) return "";
+  const value = req.headers["x-dubber-region"];
+  return typeof value === "string" ? value : "";
 }
 
 /** 127.0.0.1, the rest of 127.0.0.0/8, localhost, and ::1. */
@@ -119,17 +164,18 @@ function isLoopbackBindHost(host: string): boolean {
 }
 
 /**
- * Fail closed. A known placeholder is never a configured secret, including
- * when MCP_ALLOW_INSECURE_DEV=1 is also set. Empty is the only case the dev
- * flag may bypass, and that bypass does not check X-Gateway-S2S.
- * The secret value is never written to logs.
+ * Fail closed. A placeholder, short, or low-entropy value is never a
+ * configured secret, including when MCP_ALLOW_INSECURE_DEV=1 is also set.
+ * Empty is the only case the dev flag may bypass, and that bypass does not
+ * check X-Gateway-S2S. The secret value is never written to logs.
  */
 function resolveHttpS2sSecret(): { secret: string; insecureDev: boolean } {
   const raw = (process.env.CONDUIT_S2S_SECRET ?? "").trim();
-  if (raw && KNOWN_PLACEHOLDER_SECRETS.has(raw.toLowerCase())) {
-    refuseStart(PLACEHOLDER_S2S_SECRET_ERROR);
+  if (raw) {
+    const problem = s2sSecretProblem(raw);
+    if (problem) refuseStart(weakS2sSecretError(problem));
+    return { secret: raw, insecureDev: false };
   }
-  if (raw) return { secret: raw, insecureDev: false };
   if (process.env.MCP_ALLOW_INSECURE_DEV === "1") {
     return { secret: "", insecureDev: true };
   }
@@ -154,30 +200,71 @@ function resolveBindHost(s2sSecret: string): string {
   return LOOPBACK_HOST;
 }
 
-const CORS_ALLOW_HEADERS = [
-  "Content-Type",
-  "Accept",
-  "Authorization",
-  "Mcp-Session-Id",
-  "Mcp-Protocol-Version",
-  ...GATEWAY_HEADERS,
-].join(", ");
+/**
+ * Optional Host-header allowlist (MCP_ALLOWED_HOSTS, comma-separated; a port is ignored).
+ * Unset means off, except under MCP_ALLOW_INSECURE_DEV=1, where it defaults to localhost and
+ * 127.0.0.1: with no S2S check, a page that rebinds its DNS to 127.0.0.1 could otherwise call /mcp.
+ */
+function resolveAllowedHosts(insecureDev: boolean): ReadonlySet<string> | null {
+  const entries = (process.env.MCP_ALLOWED_HOSTS ?? "")
+    .split(",")
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean);
+  if (entries.length > 0) return new Set(entries);
+  return insecureDev ? new Set(["localhost", LOOPBACK_HOST]) : null;
+}
 
-/** stdio (default). Fresh server per process; env-mode credentials. */
+function hostAllowed(req: IncomingMessage, allowed: ReadonlySet<string> | null): boolean {
+  if (!allowed) return true;
+  const host = (req.headers.host ?? "").trim().toLowerCase();
+  if (!host) return false;
+  return allowed.has(host) || allowed.has(host.replace(/^\[([^\]]+)\](:\d+)?$/, "$1").replace(/:\d+$/, ""));
+}
+
+/** stdio (default). Fresh server per process; env-mode credentials (none in gateway mode). */
 function startStdioTransport(): void {
-  serveStdio(() => createMcpServer(resolveEnvCredentials().creds), {
+  configuredTiers(); // a DUBBER_TOOL_TIERS typo fails here, not on the first call
+  serveStdio(makeMcpServerFactory(), {
     onerror: (error) => logger.error("stdio serving error", { error: error.message }),
   });
   logger.info("Dubber MCP server running on stdio");
 }
 
+/** Validate AUTH_MODE, tool tiers, and env-mode credentials before listening. */
+function resolveStartupConfig(): { authMode: AuthMode; tiers: ReadonlySet<ToolTier> } {
+  let authMode: AuthMode;
+  let tiers: ReadonlySet<ToolTier>;
+  try {
+    authMode = parseAuthMode(process.env.AUTH_MODE);
+    tiers = configuredTiers();
+  } catch (error) {
+    refuseStart(`Refusing to start HTTP transport: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (authMode === "env") {
+    const { error } = resolveEnvCredentials();
+    if (error) refuseStart(`Refusing to start HTTP transport: AUTH_MODE=env requires DUBBER_* credentials. ${error}`);
+  }
+  return { authMode, tiers };
+}
+
+/** Raw tier header if present (even empty, which narrows to no tools); undefined if absent. */
+function tierHeader(req: IncomingMessage): string | undefined {
+  const raw = req.headers[TOOL_TIERS_HEADER];
+  if (raw === undefined) return undefined;
+  return Array.isArray(raw) ? raw.join(",") : raw;
+}
+
 export async function startHttpTransport(): Promise<HttpServer> {
   const { secret: s2sSecret, insecureDev } = resolveHttpS2sSecret();
+  const { authMode, tiers: configured } = resolveStartupConfig();
   const port = parseInt(process.env.MCP_HTTP_PORT || "8080", 10);
   const host = resolveBindHost(s2sSecret);
-  const isGatewayMode = process.env.AUTH_MODE === "gateway";
+  const allowedHosts = resolveAllowedHosts(insecureDev);
+  const isGatewayMode = authMode === "gateway";
+  // Irreversible: from here on no code path in this process reads DUBBER_* credentials.
+  if (isGatewayMode) lockGatewayMode();
 
-  const mcpHandler = createMcpHandler(makeMcpServerFactory({ gatewayMode: isGatewayMode }), {
+  const mcpHandler = createMcpHandler(makeMcpServerFactory(), {
     legacy: "stateless",
     onerror: (error) => logger.error("MCP serving error", { error: error.message }),
   });
@@ -185,25 +272,21 @@ export async function startHttpTransport(): Promise<HttpServer> {
     onerror: (error) => logger.error("MCP request adapter error", { error: error.message }),
   });
 
-  const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-    // CORS for claude.ai custom connectors — set on every response, before routing.
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, DELETE");
-    res.setHeader("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS);
-    res.setHeader("Access-Control-Max-Age", "86400");
-    if (req.method === "OPTIONS") {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
-
-    const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  // No CORS headers: only Conduit calls this server, server to server. A
+  // browser page must never be able to reach /mcp (e.g. a dev server on
+  // 127.0.0.1 without S2S), so preflights fall through to the S2S gate.
+  const route = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    // Route on the raw path. Building a URL from the request target and the Host
+    // header throws on input such as "//[" or "Host: [", and this runs before
+    // the Host allowlist and the S2S gate, so any anonymous caller could crash
+    // the process with it.
+    const path = (req.url || "/").split("?")[0];
 
     // Health endpoint — shallow, unauthenticated liveness probe. Must NOT
     // touch credentials or any upstream: in gateway mode credentials only
     // arrive per-request via headers, so a credential check here would
     // always fail and crash-loop the container.
-    if (url.pathname === "/health" || url.pathname === "/healthz") {
+    if (path === "/health" || path === "/healthz") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({
@@ -217,6 +300,12 @@ export async function startHttpTransport(): Promise<HttpServer> {
       return;
     }
 
+    if (!hostAllowed(req, allowedHosts)) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Forbidden: Host header is not in MCP_ALLOWED_HOSTS." }));
+      return;
+    }
+
     // Empty s2sSecret is only reachable when MCP_ALLOW_INSECURE_DEV=1; startup
     // refuses otherwise. A configured secret is always enforced, before any
     // credential extraction.
@@ -226,13 +315,18 @@ export async function startHttpTransport(): Promise<HttpServer> {
       return;
     }
 
-    if (url.pathname === "/mcp") {
+    if (path === "/mcp") {
       // 401 gate: reject unauthenticated gateway traffic BEFORE serving —
       // falling through to env-configured credentials would serve the
       // operator's tenant data to whoever asked (cross-tenant leak).
       // Blank or repeated headers count as missing.
+      let credentials: DubberCredentials | undefined;
       if (isGatewayMode) {
-        const { error } = resolveGatewayCredentials((name) => singleGatewayHeader(req, name.toLowerCase()));
+        const resolved = resolveGatewayCredentials((name) =>
+          name === "x-dubber-region" ? regionHeader(req) : singleGatewayHeader(req, name)
+        );
+        const error = resolved.error;
+        credentials = resolved.creds;
         if (error) {
           res.writeHead(401, { "Content-Type": "application/json" });
           res.end(
@@ -250,14 +344,34 @@ export async function startHttpTransport(): Promise<HttpServer> {
         }
       }
 
-      // Per-request credential binding happens inside the factory (it reads
-      // the gateway headers from ctx.requestInfo on every request).
-      await handleMcpRequest(req, res);
+      // This request's credentials and tiers are bound for exactly the
+      // duration of this request; the factory and the logger read them from
+      // the request scope. X-Conduit-Tool-Tiers can only narrow.
+      const tiers = narrowTiers(configured, tierHeader(req));
+      await runInRequestScope({ credentials, tiers }, () => handleMcpRequest(req, res));
       return;
     }
 
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Not found", endpoints: ["/mcp", "/health"] }));
+  };
+
+  // An async handler's rejection is unhandled and exits Node, so nothing may escape it.
+  // Only the error message is logged: never request headers or bodies.
+  const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    try {
+      await route(req, res);
+    } catch (error) {
+      logger.error("Unhandled error while serving a request", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (res.headersSent) {
+        res.end();
+      } else {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Internal server error" }));
+      }
+    }
   });
 
   await new Promise<void>((resolve, reject) => {

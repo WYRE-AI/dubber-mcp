@@ -2,26 +2,33 @@
  * dubber_recordings_list: limit/offset/time-window listing on top of Dubber's
  * real paging model (WYREAI-567).
  *
- * Dubber's GET /accounts/:id/recordings has only `count` (max 100), `page`
- * (max 5 pages), the `before_id` cursor and `query`. It has NO limit/offset and
- * NO date filter, and it silently ignores unknown params. So this handler
- * walks the newest-first list with count=100 + before_id and applies
- * offset/limit/time filtering itself.
+ * Get_Account_Recordings documents only `count` (max 100), `page`, the
+ * `before_id` cursor, `dub_point` and `team`. It has NO limit/offset and NO
+ * date filter, and it silently ignores unknown params (so an undocumented
+ * `query` is not offered: an ignored filter would return every recording).
+ * This handler walks the newest-first list with count=100 + before_id and
+ * applies offset/limit/time filtering itself.
+ *
+ * Dubber rate-limits with 403 (codes 1021/1022/1024). A rate limit after the
+ * first page ends the scan early and returns what was collected plus a
+ * cursor, so the caller can resume instead of losing the pages already read.
  */
-import type { DubberClient, Recording } from "@wyre-ai/node-dubber";
+import type { Recording } from "@wyre-ai/node-dubber";
+import { rateLimitOf, type DubberApi } from "../dubber-api.js";
 import {
-  jsonResult,
+  listResult,
   optionalInteger,
   optionalString,
-  requireString,
+  requireId,
   ToolInputError,
+  trimNote,
   type ToolResult,
 } from "./results.js";
 
 /** Dubber's maximum `count` per request. */
 export const DUBBER_PAGE_SIZE = 100;
-/** Hard cap on Dubber requests per tool call (25 * 100 = 2,500 recordings scanned). */
-export const MAX_REQUESTS_PER_CALL = 25;
+/** Hard cap on Dubber requests per tool call (10 * 100 = 1,000 recordings scanned). */
+export const MAX_REQUESTS_PER_CALL = 10;
 export const DEFAULT_LIMIT = 100;
 export const MAX_LIMIT = 500;
 
@@ -29,27 +36,17 @@ export const MAX_LIMIT = 500;
 export interface RecordingsPageParams {
   count: number;
   before_id?: string;
-  query?: string;
   dub_point?: string;
   team?: string;
 }
 
-/**
- * The single place that talks to the SDK's recordings.list.
- *
- * @wyre-ai/node-dubber 1.0.0 types `list` params as `{ limit?, offset? }`, but
- * its HTTP layer copies every key verbatim into the query string at runtime.
- * We therefore cast ONCE here to send Dubber's real params. Once the node-dubber
- * release that types `count`/`before_id`/`query` is adopted, drop the cast and
- * pass `params` directly.
- */
+/** The single place that talks to the SDK's recordings.list (node-dubber >= 1.1.0 types Dubber's real params). */
 async function fetchRecordingsPage(
-  client: DubberClient,
+  client: DubberApi,
   accountId: string,
   params: RecordingsPageParams
 ): Promise<Recording[]> {
-  const loose = params as unknown as Parameters<DubberClient["recordings"]["list"]>[1];
-  return client.recordings.list(accountId, loose);
+  return client.recordings.list(accountId, params);
 }
 
 const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -59,7 +56,13 @@ interface ParsedBound {
   /** epoch ms of the bound */
   ms: number;
   dateOnly: boolean;
+  /** No UTC offset was given (a date-only bound, or a date-time without Z or +hh:mm), so UTC was assumed. */
+  assumedUtc: boolean;
 }
+
+const ASSUMED_UTC_NOTE =
+  "startTimeFrom/startTimeTo had no UTC offset and were interpreted as UTC (see filters); " +
+  "pass an explicit offset such as +11:00 for a local-time window.";
 
 /** True when y-m-d is a real calendar date (rejects 2026-02-31). */
 function validYmd(y: number, m: number, d: number): boolean {
@@ -73,13 +76,13 @@ function parseBound(key: string, raw: string): ParsedBound {
   const bad = () =>
     new ToolInputError(
       `Argument "${key}" must be an ISO 8601 date (2026-10-19) or date-time ` +
-        `(2026-10-19T09:00:00+10:00); got "${raw}".`
+        `(2026-10-19T09:00:00+11:00); got "${raw}".`
     );
   const dateOnly = DATE_ONLY.exec(value);
   if (dateOnly) {
     const [y, m, d] = [Number(dateOnly[1]), Number(dateOnly[2]), Number(dateOnly[3])];
     if (!validYmd(y, m, d)) throw bad();
-    return { ms: Date.UTC(y, m - 1, d), dateOnly: true };
+    return { ms: Date.UTC(y, m - 1, d), dateOnly: true, assumedUtc: true };
   }
   const dt = DATE_TIME.exec(value);
   if (!dt) throw bad();
@@ -97,7 +100,11 @@ function parseBound(key: string, raw: string): ParsedBound {
   }
   const fractional = /\.(\d{1,9})/.exec(value)?.[1];
   const ms = fractional ? Number(`0.${fractional}`) * 1000 : 0;
-  return { ms: Date.UTC(y, m - 1, d, hh, mm, ss) + Math.floor(ms) - offsetMin * 60_000, dateOnly: false };
+  return {
+    ms: Date.UTC(y, m - 1, d, hh, mm, ss) + Math.floor(ms) - offsetMin * 60_000,
+    dateOnly: false,
+    assumedUtc: zone === undefined,
+  };
 }
 
 /** Recording start_time (RFC 2822, e.g. "Sun, 28 Jul 2013 12:42:10 +1000") -> epoch ms, or undefined. */
@@ -135,8 +142,14 @@ function optionalId(args: Record<string, unknown>, key: string): string | undefi
   return raw.trim();
 }
 
-export async function listRecordings(client: DubberClient, args: Record<string, unknown>): Promise<ToolResult> {
-  const accountId = requireString(args, "accountId");
+export async function listRecordings(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
+  if (args["query"] !== undefined) {
+    throw new ToolInputError(
+      'Argument "query" was removed: Dubber has no text search on recordings, so it would be silently ignored and ' +
+        "every recording returned. Filter with dubPointId, teamId, startTimeFrom and startTimeTo instead."
+    );
+  }
+  const accountId = requireId(args, "accountId");
   const limit = intInRange(args, "limit", 1, MAX_LIMIT, DEFAULT_LIMIT);
   const offset = intInRange(args, "offset", 0, Number.MAX_SAFE_INTEGER, 0);
 
@@ -148,7 +161,6 @@ export async function listRecordings(client: DubberClient, args: Record<string, 
     }
     cursor = raw.trim();
   }
-  const query = optionalString(args, "query")?.trim() || undefined;
   const dubPointId = optionalId(args, "dubPointId");
   const teamId = optionalId(args, "teamId");
   if (dubPointId !== undefined && teamId !== undefined) {
@@ -181,14 +193,26 @@ export async function listRecordings(client: DubberClient, args: Record<string, 
   let hasMore = false;
   let nextCursor: string | null = null;
   let scanCapReached = false;
+  let rateLimited: string | undefined;
+  let stoppedOlderAt: string | undefined;
 
   paging: for (;;) {
     const params: RecordingsPageParams = { count: DUBBER_PAGE_SIZE };
     if (beforeId !== undefined) params.before_id = beforeId;
-    if (query !== undefined) params.query = query;
     if (dubPointId !== undefined) params.dub_point = dubPointId;
     if (teamId !== undefined) params.team = teamId;
-    const page = await fetchRecordingsPage(client, accountId, params);
+    let page: Recording[];
+    try {
+      page = await fetchRecordingsPage(client, accountId, params);
+    } catch (error) {
+      const rateLimit = rateLimitOf(error);
+      // Nothing read yet: report the error. Otherwise keep what was read and hand back a cursor.
+      if (!rateLimit || requests === 0) throw error;
+      rateLimited = rateLimit.kind === "daily" ? "Dubber's daily rate limit" : "Dubber's rate limit";
+      hasMore = true;
+      nextCursor = beforeId ?? null;
+      break;
+    }
     requests += 1;
     if (page.length === 0) break;
 
@@ -229,7 +253,12 @@ export async function listRecordings(client: DubberClient, args: Record<string, 
     if (typeof lastId !== "string" || lastId === "") {
       throw new Error("Dubber returned a recording without an id, so the list cannot be paged further.");
     }
-    if (pageAllBeforeFrom) break; // everything further back is older than startTimeFrom
+    if (pageAllBeforeFrom) {
+      // Everything further back is older than startTimeFrom, IF Dubber lists newest first by
+      // start_time. Its docs do not state the order, so the note offers a cursor to check.
+      stoppedOlderAt = lastId;
+      break;
+    }
     if (requests >= MAX_REQUESTS_PER_CALL) {
       scanCapReached = true;
       hasMore = true;
@@ -240,7 +269,12 @@ export async function listRecordings(client: DubberClient, args: Record<string, 
   }
 
   let note: string | undefined;
-  if (scanCapReached) {
+  if (rateLimited) {
+    note =
+      `${rateLimited} stopped the scan after ${requests} Dubber requests. ` +
+      `Call again with cursor="${nextCursor}" and offset=${toSkip} (same filters) to continue` +
+      (rateLimited.includes("daily") ? " once the daily quota resets." : " in a few seconds.");
+  } else if (scanCapReached) {
     note =
       `Scan cap reached (${requests} Dubber requests, ${scanned} recordings examined) before the limit was met. ` +
       `Call again with cursor="${nextCursor}" and offset=${toSkip} (same filters) to continue.`;
@@ -249,31 +283,49 @@ export async function listRecordings(client: DubberClient, args: Record<string, 
   } else if (recordings.length === 0) {
     note = "No recordings found.";
   }
+  if (stoppedOlderAt !== undefined) {
+    const extra =
+      "Stopped at a full page of recordings all older than startTimeFrom, assuming Dubber lists newest first " +
+      "by start_time (its docs do not state the order). To check further back anyway, call again with " +
+      `cursor="${stoppedOlderAt}" and offset=${toSkip} (same filters).`;
+    note = note ? `${note} ${extra}` : extra;
+  }
   if (timeFiltered && unparseable > 0) {
     const extra = `${unparseable} examined recording(s) had an unparseable start_time and were excluded by the time filter.`;
     note = note ? `${note} ${extra}` : extra;
   }
+  const assumedUtc = from?.assumedUtc === true || to?.assumedUtc === true;
+  if (assumedUtc) note = note ? `${note} ${ASSUMED_UTC_NOTE}` : ASSUMED_UTC_NOTE;
 
-  return jsonResult({
-    recordings,
-    returned: recordings.length,
+  const fields = {
     hasMore,
     nextCursor,
     remainingOffset: toSkip,
     scanned,
     requests,
     scanCapReached,
+    ...(rateLimited ? { rateLimited: true } : {}),
     ...(timeFiltered ? { excludedUnparseableStartTime: unparseable } : {}),
     filters: {
       limit,
       offset,
       cursor: cursor ?? null,
-      query: query ?? null,
       dubPointId: dubPointId ?? null,
       teamId: teamId ?? null,
       startTimeFrom: fromMs === undefined ? null : new Date(fromMs).toISOString(),
       startTimeToExclusive: toExclusiveMs === undefined ? null : new Date(toExclusiveMs).toISOString(),
     },
     ...(note ? { note } : {}),
+  };
+  // Too long for one result: keep the newest recordings and resume after the last one kept.
+  return listResult(fields, "recordings", recordings, (kept, total) => {
+    const cursor = (kept[kept.length - 1] as Recording).id;
+    const trimmed = trimNote(kept.length, total, `Call again with cursor="${cursor}" and offset=0 (same filters) to continue.`);
+    return {
+      hasMore: true,
+      nextCursor: cursor,
+      remainingOffset: 0,
+      note: assumedUtc ? `${trimmed} ${ASSUMED_UTC_NOTE}` : trimmed,
+    };
   });
 }

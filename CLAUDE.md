@@ -53,3 +53,114 @@ decisions: `docs/DESIGN.md`.
   `azure/vendor-fleet.conduit-prod.bicepparam` (mcp-vendor-scaffolding §3), a marketplace
   plugin entry (§4), and any live call against a real Dubber sandbox account (see above —
   everything here is MSW-mock-verified, not live-verified).
+
+## Learnings - 2026-11-09
+
+- **node-dubber's HTTP layer can't meet the fleet transport contract** (it uses bare `fetch`:
+  redirect-follow, unbounded reads, no dot-segment check, token mint follows redirects with
+  the client secret in the body). Rather than fork the SDK, `src/dubber-api.ts` passes its
+  own `GuardedHttp` (one `request(path, options)` method) to node-dubber's exported
+  resource classes. The SDK keeps owning paths/params; this repo owns every byte on the
+  wire. node-dubber types the constructor arg as its `HttpClient` class (private fields),
+  hence the single `as unknown as HttpClient` cast.
+- **`encodeURIComponent("..")` is still `..`**, and `new URL()` then normalizes it away
+  (`/recordings/..` → `/<region>/v1/`). Encoding alone is not traversal protection: ids
+  are validated (`requireId`) AND the built URL's pathname must equal the expected path.
+- **AsyncLocalStorage survives the v2 SDK's `createMcpHandler` → factory path.** Wrapping
+  `handleMcpRequest(req, res)` in `runInRequestScope` is enough for the factory and the
+  logger to see that request's credentials; the http-s2s-auth test proves header creds
+  reach the token mint.
+- **Conduit derives tiers from annotations** (`destructiveHint` → admin, `readOnlyHint` →
+  read, else write; `src/access/first-party-default.test.ts`). Superseded the same day: the
+  server is now read-only (see the next entry), so every tool is `read`.
+- **The reusable release workflow supplies an `npmrc` BuildKit secret** (style 3 in
+  `mcp-server-release.yml`), so the Dockerfile mounts it instead of taking a
+  `GITHUB_TOKEN` build arg; no workflow change was needed.
+
+## Learnings - 2026-11-09 (review fixes)
+
+- **The server is read-only, per the fleet template contract.** All 21 write/admin tools are
+  deleted (not just hidden behind `DUBBER_TOOL_TIERS`), `ALL_TIERS = ["read"]`, and
+  `DUBBER_TOOL_TIERS=write` refuses to start. Most of those tools were wrong against Dubber's
+  docs anyway (`notifications_create` sent `url`/`event` instead of `post_url`/`event_type`;
+  `accounts_create` sent `group_id`/`timezone` instead of `group`/`time_zone`; `users_create`
+  sent an undocumented `name`; the multipart upload sent `{}` to `complete_upload`). If writes
+  come back, build them from the official samples with fetch-level tests, as separate PRs.
+- **Gateway follow-up before any repin:** the gateway's tool manifest, result-cache table and
+  tool-naming exceptions must be updated for the 16-tool surface before it repins to this
+  image.
+- **Dubber's sample token lives 240 s** (Authorization_by_Password). A fixed 30-minute refresh
+  margin meant every call minted, against a ~500 tokens/24 h cap. The margin is now
+  a tenth of the lifetime, clamped to 5 s .. 30 min (see `mint()` in `dubber-api.ts`), and a missing `expires_in` means 24 h. Test fixtures use
+  240, not 86400, so this can't hide again.
+- **Dubber rate-limits with 403, not 429** (codes 1021 QPS, 1022 daily, 1024; or an "Over
+  Rate Limit" message). `rateLimitOf()` in `dubber-api.ts` classifies them; without it the
+  error read as a permissions problem.
+- **Endpoints node-dubber 1.1.0 gets wrong or lacks**: `groups.listUnidentifiedRecordings`
+  calls an undocumented path (the real one is `/groups/:id/unidentified_dub_points`), and
+  `users.list` sends no `count`/`page` (Dubber defaults to 20). Both go through
+  `DubberApi.request` (the guarded transport) instead. `notifications.listUnclaimed` releases
+  held messages, so it is not exposed at all.
+- **`dubber_recordings_get_link` is its own tool** so Conduit can disable audio links without
+  disabling reads. `listener` is attributed by Dubber; the description says to pass only the
+  requester's own email. Not live-verified whether Dubber writes an audit event for it.
+- **The fleet's reusable `mcp-server-ci.yml` does not fit this repo yet**: its docker-smoke
+  npmrc maps only `@wyre-technology`, and the Dockerfile mounts that file over `/app/.npmrc`,
+  so `@wyre-ai/node-dubber` would not resolve; it also runs `npm ci` without
+  `--ignore-scripts`. `ci.yml` copies its process.env credential-mutation guard instead.
+
+## Learnings - 2026-11-09 (review round 2)
+
+- **`maxToolInputElements` (the GHSA-46jr-4wx8-v453 cap) is an `McpServer` option only.** The
+  low-level `Server` used here has no such option and this server never schema-validates tool
+  arguments, so the SDK bump (server/core 2.4.0, node 2.1.2, zod 4.6.7) is the whole fix.
+- **Dubber answers 401 for "no access to this resource" too** (HTTP_Responses page; e.g.
+  unidentified dub points need a group-level token). Only a 401 on a *cached* token re-mints;
+  re-minting after a fresh token's 401 spent the ~500 mints/day budget.
+- **Output cap: trim lists by item, never cut the JSON.** `listResult` (handlers/results.ts)
+  drops items from the end and lets each tool rewrite its paging fields; the string cut in
+  `mcp-server.ts` runs after redaction and only for a lone oversized item. Paging fields are
+  serialized ahead of the list so even that cut keeps them.
+- **Still not live-verified** (no sandbox credentials): the recordings sort key (the scan's
+  early stop assumes newest first by `start_time` and says so), and whether
+  `/notifications/:id` or `/accounts/notifications/:id` is the live path (the docs page shows
+  both; the code uses the documented `/notifications/:id`).
+- **Fleet follow-up, not this repo:** `wyre-technology/.github` `mcp-assert.yml` (pinned here at
+  `06856d54`) runs plain `npm ci` and checks out without `persist-credentials: false`.
+
+## Learnings - 2026-11-12
+
+- **A URL constructor before auth is a remote crash.** `startHttpTransport` used to build
+  `new URL(req.url, "http://" + Host)` as the first statement of an async handler. `//[`,
+  `//`, `http://[` or `Host: [` make it throw, nothing caught the rejection, and Node exited,
+  for any anonymous caller (it ran before `/health`, the Host allowlist and the S2S gate).
+  Routing now compares the raw path (`req.url` up to the first `?`), so nothing is parsed
+  before auth, and the whole handler sits in one try/catch (500 for an unsent response, `end()`
+  otherwise; only the error message is logged). Any new code that wants a URL object must
+  build it inside that try. `http-malformed-target.test.ts` sends the raw bytes over `node:net`,
+  because HTTP client libraries normalise or reject such targets.
+- **Redaction patterns run over up to 4 MiB of upstream text, so they must be linear.** The JWT
+  pattern with a hyphen in its first segment was quadratic on repeated `eyJ-`. The first
+  segment is now hyphen-free, which is what makes it linear. Segments 2 and 3 are unbounded: a
+  2048 cap let tokens with large claim sets (group or role lists) through unredacted. A regex that blocks the
+  event loop also blocks vitest's own timeout, so the regression test hangs instead of failing
+  when it breaks. Key-name redaction covers any non-null value (numbers, booleans, objects,
+  arrays), not only strings.
+- **401 re-mints are rate limited, not just gated on a cached token.** Dubber answers 401 for
+  "no access" as well, and a caller that keeps asking for an inaccessible resource re-minted
+  on every call, against the ~500 mints/24 h cap. `takeRemint` in `dubber-api.ts` allows one
+  401-triggered mint per credential cache entry per 10 minutes; a 401 inside the window is
+  returned as is, unless a concurrent call already replaced the cached token (or a mint is in
+  flight): then the 401 retries with the new token and mints nothing. The stale token is
+  dropped before the first `await`, so parallel 401s see it replaced. Tests fake `Date` only
+  (`vi.useFakeTimers({ toFake: ["Date"] })`).
+- **semantic-release does not commit its version bump, so `package.json` stays at the
+  placeholder.** An image released from this branch would therefore have reported
+  `0.0.0-semantically-released` on `/health`.
+  The Dockerfile builder stage now copies `scripts/stamp-version.mjs` and runs it with the
+  `VERSION` build-arg (the one that feeds the OCI labels) before `npm run build`; `unknown` or
+  empty leaves the file alone. Docker was not run while writing this: the first release built
+  with it must confirm `/health` shows the release version.
+- **Date bounds without an offset are UTC**, which is easy to miss for a local week. The list
+  result's note says so whenever either bound was date-only or had no offset. Melbourne is +11:00
+  in late October (daylight time), not +10:00.
