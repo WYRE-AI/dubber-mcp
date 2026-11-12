@@ -65,10 +65,12 @@ request uses the SDK's own `fetch`. `src/dubber-api.ts` is the only path to
 Dubber: fixed origin plus an exact-path check on every built URL,
 `redirect: "manual"` with every 3xx refused (including the token mint, whose
 body carries the client secret), 4 MiB bounded reads, vendor request ids on
-errors, no automatic retries except one re-mint after a 401 on a cached token, GET-only requests
+errors, no automatic retries except one re-mint after a 401 on a cached token (at most once per
+10 minutes per credential set), GET-only requests
 with no body (node-dubber's write methods are refused before any request), and a
-per-credential token cache (Dubber caps tokens at ~500 per 24 h). A token is reused for
-90% of its lifetime (≤30 min margin, ≥5 s; no `expires_in` = 24 h), so Dubber's 240 s sample
+per-credential token cache (Dubber caps tokens at ~500 per 24 h). A token is refreshed a
+tenth of its lifetime before expiry (no less than 5 s and no more than 30 min before; no
+`expires_in` = 24 h), so Dubber's 240 s sample
 tokens are minted at most every 216 s (~400 a day), not per call. Dubber's 403 rate limits
 (codes 1021/1022/1024, or Mashery's `X-Mashery-Error-Code` / `X-Error-Detail-Header`
 over-QPS and over-rate rejections) are reported as rate limits, not access errors.
