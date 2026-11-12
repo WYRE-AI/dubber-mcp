@@ -14,16 +14,19 @@
  * - no automatic retries, except one token refresh after a 401 on a cached
  *   token, and that at most once per 10 minutes per credential set (Dubber
  *   also answers 401 for "no access to this resource", and caps mints, so a
- *   401 on a token minted for this call, or inside the window, is final);
+ *   401 on a token minted for this call, or inside the window, is final
+ *   unless a concurrent call already replaced the token, in which case the
+ *   call retries with the new token at no cost);
  * - GET only, with no body: the read-only guarantee lives here, not only in
  *   the handlers (node-dubber's resources also expose write methods). The
  *   token mint is the one POST and calls send() directly.
  *
- * Tokens are cached per credential set and reused for 90% of their lifetime
- * (at most until 30 minutes before expiry). Dubber's Getting Started guide
- * caps tokens at about 500 per 24 h and says to store them, so minting per
- * call is not an option: even its 240 s sample token is reused for 216 s,
- * which keeps continuous use at about 400 mints a day.
+ * Tokens are cached per credential set and refreshed a tenth of their lifetime
+ * before expiry (no less than 5 seconds and no more than 30 minutes before).
+ * Dubber's Getting Started guide caps tokens at about 500 per 24 h and says
+ * to store them, so minting per call is not an option: even its 240 s sample
+ * token is reused for 216 s, which keeps continuous use at about 400 mints a
+ * day.
  */
 import { createHash } from "node:crypto";
 import {

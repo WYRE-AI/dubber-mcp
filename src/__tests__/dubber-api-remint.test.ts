@@ -114,6 +114,47 @@ describe("401 on a cached token", () => {
     expect(mints).toBe(4);
   });
 
+  it("still applies the window to sets inside it after the tracking map is swept", async () => {
+    const apiFor = (n: number) =>
+      createDubberApi({
+        clientId: `sweep-client-${n}`,
+        clientSecret: "remint-secret",
+        authId: "remint-auth-id",
+        authToken: "remint-auth-token",
+        region: "sandbox",
+      });
+    /** Mints for set n, then spends its one 401 re-mint. */
+    const useUpRemint = async (n: number) => {
+      const set = apiFor(n);
+      await set.request("/profile");
+      profileStatuses = [401, 200];
+      await set.request("/profile");
+    };
+
+    // 1000 sets fill the tracking map: the first 500 at 0 min, the next 500 at 6 min.
+    for (let n = 0; n < 500; n++) await useUpRemint(n);
+    vi.advanceTimersByTime(6 * 60_000);
+    for (let n = 500; n < 1000; n++) await useUpRemint(n);
+
+    // At 11 min the first 500 are outside the window and the next 500 are inside it.
+    // One more set makes the map sweep the expired entries.
+    vi.advanceTimersByTime(5 * 60_000);
+    await useUpRemint(1000);
+
+    // A set inside the window still gets its 401 back, with no mint.
+    const inside = apiFor(999);
+    const mintsBefore = mints;
+    profileStatuses = [401];
+    await expect(inside.request("/profile")).rejects.toMatchObject({ statusCode: 401 });
+    expect(mints).toBe(mintsBefore);
+
+    // Once its window has passed it re-mints once.
+    vi.advanceTimersByTime(REMINT_WINDOW_MS);
+    profileStatuses = [401, 200];
+    await expect(inside.request("/profile")).resolves.toEqual({ ok: true });
+    expect(mints).toBe(mintsBefore + 1);
+  }, 30_000);
+
   it("does not change normal expiry-driven refresh", async () => {
     await api.request("/profile");
     // Past the 24 h lifetime: the next call mints because the token expired, not because of a 401.
