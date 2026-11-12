@@ -1,3 +1,8 @@
 # Test fixture S2S secret committed in 88b0804 and replaced in 0cdff94 with a
 # per-run randomBytes value. Not a real credential; pinned to that one commit.
 88b0804c5694070a79c42541cf7c3f0075f6cc4c:src/__tests__/http-s2s-auth.test.ts:generic-api-key:35
+
+# Sample JWT (the public jwt.io example shape) committed as a redaction test
+# fixture in 1962f7d and since joined from its parts at run time. Not a real
+# credential; pinned to that one commit.
+1962f7db7b81cfced2016fc635ef3f22eadac9cd:src/__tests__/redact.test.ts:jwt:7
