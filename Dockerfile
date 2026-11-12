@@ -16,6 +16,12 @@ RUN --mount=type=secret,id=npmrc,target=/app/.npmrc npm ci --ignore-scripts
 
 COPY tsconfig.json ./
 COPY src ./src
+# semantic-release never commits its version bump, so the committed package.json carries a
+# placeholder. Stamp the release version (the same VERSION build-arg that feeds the OCI labels)
+# so /health and serverInfo report it. "unknown" (no build-arg) leaves package.json unchanged.
+COPY scripts/stamp-version.mjs ./scripts/stamp-version.mjs
+ARG VERSION="unknown"
+RUN node scripts/stamp-version.mjs "$VERSION" package.json
 RUN npm run build && npm prune --omit=dev && npm cache clean --force
 
 FROM node:22-alpine@sha256:0e1754758c2df4cfa3e68d59e2e1b7374bb7fd9ea6328eaaacf15cc934af8202 AS production
