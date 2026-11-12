@@ -42,9 +42,10 @@ export function redactValue(value: unknown, depth = 0): unknown {
 
 const TEXT_PATTERNS: RegExp[] = [
   /\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi,
-  // Bounded quantifiers, and no hyphen in the first segment, so a hostile body
-  // (up to 4 MiB of upstream text is redacted) cannot make the match quadratic.
-  /\beyJ[A-Za-z0-9_]{8,2048}\.[A-Za-z0-9_-]{8,2048}\.[A-Za-z0-9_-]{8,2048}\b/g,
+  // No hyphen in the first segment, so a hostile body (up to 4 MiB of upstream text is
+  // redacted) cannot make the match quadratic. The later segments are unbounded: tokens
+  // with large claim sets are legitimate, and they must not slip through unredacted.
+  /\beyJ[A-Za-z0-9_]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
 ];
 
 /**

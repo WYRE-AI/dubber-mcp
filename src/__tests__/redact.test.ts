@@ -8,6 +8,14 @@ describe("redactText: JWT pattern", () => {
     expect(redactText(`token ${jwt} end`)).toBe(`token ${REDACTED} end`);
   });
 
+  it("redacts a JWT whose payload or signature is longer than 2048 characters", () => {
+    const header = "eyJhbGciOiJIUzI1NiJ9";
+    const bigPayload = `${header}.${"a".repeat(3000)}.${"b".repeat(43)}`;
+    const bigSignature = `${header}.${"a".repeat(43)}.${"b".repeat(3000)}`;
+    expect(redactText(`{"link":"${bigPayload}"}`)).toBe(`{"link":"${REDACTED}"}`);
+    expect(redactText(`{"link":"${bigSignature}"}`)).toBe(`{"link":"${REDACTED}"}`);
+  });
+
   it.each([
     ["repeated eyJ-", "eyJ-".repeat(250_000)],
     ["repeated eyJa", "eyJa".repeat(250_000)],
