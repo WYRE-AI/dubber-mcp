@@ -89,13 +89,14 @@ decisions: `docs/DESIGN.md`.
 - **Conduit follow-up before any repin (prod pins v1.0.1, 37 tools):** in the Conduit repo,
   update `tests/mcp/manifests/container-tools.json` (16 tools, including the new
   `dubber_recordings_get_link` and `dubber_groups_list_unidentified_dub_points`), prune the
-  dubber write/admin rows and the renamed/removed read rows in
-  `src/proxy/result-cache.ts` (~4172-4214), and drop the dubber entries in
-  `src/access/tool-naming-exceptions.ts` (~1260-1265). Do not move PR #2248 to this image
+  dubber write/admin rows and the renamed/removed read rows in the result-cache table in
+  `src/proxy/result-cache.ts`, and drop the dubber entries in the tool-naming exceptions table
+  in `src/access/tool-naming-exceptions.ts`. Do not move PR #2248 to this image
   without that.
 - **Dubber's sample token lives 240 s** (Authorization_by_Password). A fixed 30-minute refresh
   margin meant every call minted, against a ~500 tokens/24 h cap. The margin is now
-  half the lifetime (≤30 min, ≥5 s) and a missing `expires_in` means 24 h. Test fixtures use
+  a tenth of the lifetime (so a token is reused for 90% of it; ≤30 min, ≥5 s: see `mint()` in
+  `dubber-api.ts`) and a missing `expires_in` means 24 h. Test fixtures use
   240, not 86400, so this can't hide again.
 - **Dubber rate-limits with 403, not 429** (codes 1021 QPS, 1022 daily, 1024; or an "Over
   Rate Limit" message). `rateLimitOf()` in `dubber-api.ts` classifies them; without it the
@@ -131,3 +132,35 @@ decisions: `docs/DESIGN.md`.
   both; the code uses the documented `/notifications/:id`).
 - **Fleet follow-up, not this repo:** `wyre-technology/.github` `mcp-assert.yml` (pinned here at
   `06856d54`) runs plain `npm ci` and checks out without `persist-credentials: false`.
+
+## Learnings - 2026-11-12
+
+- **A URL constructor before auth is a remote crash.** `startHttpTransport` used to build
+  `new URL(req.url, "http://" + Host)` as the first statement of an async handler. `//[`,
+  `//`, `http://[` or `Host: [` make it throw, nothing caught the rejection, and Node exited,
+  for any anonymous caller (it ran before `/health`, the Host allowlist and the S2S gate).
+  Routing now compares the raw path (`req.url` up to the first `?`), so nothing is parsed
+  before auth, and the whole handler sits in one try/catch (500 for an unsent response, `end()`
+  otherwise; only the error message is logged). Any new code that wants a URL object must
+  build it inside that try. `http-malformed-target.test.ts` sends the raw bytes over `node:net`,
+  because HTTP client libraries normalise or reject such targets.
+- **Redaction patterns run over up to 4 MiB of upstream text, so they must be linear.** The JWT
+  pattern with unbounded `[A-Za-z0-9_-]{8,}` segments was quadratic on repeated `eyJ-`. It now
+  has 8 to 2048 character segments and no hyphen in the first one. A regex that blocks the
+  event loop also blocks vitest's own timeout, so the regression test hangs instead of failing
+  when it breaks. Key-name redaction covers any non-null value (numbers, booleans, objects,
+  arrays), not only strings.
+- **401 re-mints are rate limited, not just gated on a cached token.** Dubber answers 401 for
+  "no access" as well, and a caller that keeps asking for an inaccessible resource re-minted
+  on every call, against the ~500 mints/24 h cap. `takeRemint` in `dubber-api.ts` allows one
+  401-triggered mint per credential cache entry per 10 minutes; a 401 inside the window is
+  returned as is. Tests fake `Date` only (`vi.useFakeTimers({ toFake: ["Date"] })`).
+- **semantic-release does not commit its version bump, so `package.json` stays at the
+  placeholder.** Released images therefore reported `0.0.0-semantically-released` on `/health`.
+  The Dockerfile builder stage now copies `scripts/stamp-version.mjs` and runs it with the
+  `VERSION` build-arg (the one that feeds the OCI labels) before `npm run build`; `unknown` or
+  empty leaves the file alone. Docker was not run while writing this: the first release built
+  with it must confirm `/health` shows the release version.
+- **Date bounds without an offset are UTC**, which is easy to miss for a local week. The list
+  result's note says so whenever either bound was date-only or had no offset. Melbourne is +11:00
+  in late October (daylight time), not +10:00.
