@@ -11,7 +11,7 @@
 
 export const REDACTED = "[REDACTED]";
 
-/** Normalized (lower-case, no `_`/`-`) key names whose string values are credentials. */
+/** Normalized (lower-case, no `_`/`-`) key names whose values are credentials. */
 const SENSITIVE_KEYS = new Set(["authorization", "hmac"]);
 
 /**
@@ -26,14 +26,14 @@ function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEYS.has(normalized) || SENSITIVE_SUFFIX.test(normalized);
 }
 
-/** Recursively replaces string values under credential-named keys. Returns a new value. */
+/** Recursively replaces any non-null value (string, number, boolean, object, array) under a credential-named key. Returns a new value. */
 export function redactValue(value: unknown, depth = 0): unknown {
   if (depth > 64) return REDACTED;
   if (Array.isArray(value)) return value.map((v) => redactValue(v, depth + 1));
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = isSensitiveKey(key) && typeof v === "string" && v.length > 0 ? REDACTED : redactValue(v, depth + 1);
+      out[key] = isSensitiveKey(key) && v !== null && v !== undefined ? REDACTED : redactValue(v, depth + 1);
     }
     return out;
   }
@@ -42,7 +42,9 @@ export function redactValue(value: unknown, depth = 0): unknown {
 
 const TEXT_PATTERNS: RegExp[] = [
   /\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi,
-  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
+  // Bounded quantifiers, and no hyphen in the first segment, so a hostile body
+  // (up to 4 MiB of upstream text is redacted) cannot make the match quadratic.
+  /\beyJ[A-Za-z0-9_]{8,2048}\.[A-Za-z0-9_-]{8,2048}\.[A-Za-z0-9_-]{8,2048}\b/g,
 ];
 
 /**
