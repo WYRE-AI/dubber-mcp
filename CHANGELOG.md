@@ -7,8 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This is a breaking release (v2.0.0): the server becomes read-only.
+
+### Migration from v1.1.0
+
+The 23 tools that no longer exist are the 21 write and admin tools listed under Removed, plus
+`dubber_notifications_list_unclaimed` and `dubber_groups_list_unidentified_recordings`.
+Calling any of them answers "Unknown tool", and `DUBBER_TOOL_TIERS` accepts only `read`, so a
+deployment that set `write` or `admin` refuses to start until the value is changed. Do creates,
+updates, deletes and uploads in the Dubber portal or with Dubber's API directly. Callers of
+`dubber_users_list` and `dubber_dub_points_list` must read the list from the new `users` /
+`dub_points` field (see Changed).
+
 ### Added
 
+- `dubber_recordings_list`, relative to v1.1.0. Already shipped in v1.1.0: paging
+  (`limit`/`offset`/`cursor`), the `startTimeFrom`/`startTimeTo` window and the
+  `dubPointId`/`teamId` filters. New here: the 10-request scan cap (was 25), resuming after a
+  rate limit (below), and the 60,000-character output cap (see Changed).
 - `dubber_recordings_get_link` returns Dubber's pre-signed `recording_url` for a required
   `listener` (WYREAI-567 item 2), with optional `contentDisposition`. The link is never logged
   or cached.
@@ -37,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Breaking:** the server is read-only: 16 tools, all `readOnlyHint: true`.
   `DUBBER_TOOL_TIERS` values other than `read` refuse to start.
+- **Breaking:** `dubber_users_list` and `dubber_dub_points_list` return
+  `{ users | dub_points, returned, count, page, hasMore, note? }` instead of a bare array, and
+  return at most `count` items per call (default 100, max 100; Dubber's own default is 20).
+  Read the list from `users` or `dub_points`, and page with `page` while `hasMore` is true.
 - **Breaking:** `dubber_recordings_get` no longer takes `listener`; use
   `dubber_recordings_get_link`.
 - **Breaking:** `dubber_dub_points_find` accepts only `external_type`, `service_provider`,
@@ -54,7 +74,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   identified by `X-Mashery-Error-Code` / `X-Error-Detail-Header`) are reported as rate limits,
   not as missing access.
 - `/health` and MCP `serverInfo` report the `package.json` version instead of a hardcoded
-  `1.0.0`.
+  `1.0.0`. semantic-release never commits its version bump, so the Docker build now stamps the
+  `VERSION` build-arg into `package.json` (`scripts/stamp-version.mjs`) before compiling. This
+  is untested in CI: the first release built from this change must confirm that the published
+  image reports its release version on `/health` (not `0.0.0-semantically-released`).
+- A 401 on a cached token re-mints at most once per 10 minutes per credential set; a 401
+  inside that window is returned as it is (Dubber caps mints at about 500 per 24 hours).
+- Time bounds without a UTC offset (`2026-10-23`, `2026-10-23T09:00:00`) are still read as UTC,
+  and `dubber_recordings_list` now says so in its `note`.
+- The JWT redaction pattern is bounded, so a hostile body of repeated `eyJ-` can no longer stall
+  the event loop. Values of any type (numbers, booleans, objects, arrays), not only strings,
+  under a credential-named key are redacted.
 - `dubber_recordings_get_waveform` says it returns a short-lived pre-signed `waveform_url`;
   `dubber_recordings_get` no longer claims to return tags.
 - `dubber_recordings_list` scans at most 10 Dubber requests (1,000 recordings) per call, down
@@ -112,7 +142,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not a read.
 - `dubber_groups_list_unidentified_recordings`: it called an undocumented endpoint; replaced by
   `dubber_groups_list_unidentified_dub_points`.
-- The undocumented `query` input on `dubber_recordings_list`.
+- The undocumented `query` input on `dubber_recordings_list`. Passing it is now an error that
+  names `dubPointId`, `teamId`, `startTimeFrom` and `startTimeTo`, instead of being silently
+  ignored (which returned every recording).
+
+### Fixed
+
+- An anonymous request with a malformed request target (such as `//[`) or Host header (such as
+  `[`) crashed the process: routing built a URL object before the Host allowlist and the S2S
+  gate, and the rejected async handler exited Node. Routing now uses the raw path, and the whole
+  handler is wrapped so any error answers 500 and is logged without request headers or bodies.
 
 ### Security
 

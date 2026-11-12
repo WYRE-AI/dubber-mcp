@@ -5,7 +5,8 @@ audio links, groups, accounts, users, REST-hook (webhook) subscriptions, and Dub
 telecom-system (e.g. BroadWorks) recording sources. No tool changes anything in Dubber.
 
 Built on the MCP **2026-07-28** spec via the split v2 SDK
-(`@modelcontextprotocol/server` / `/node` / `/client` `^2.0.0-beta.5`) with **dual-era
+(`@modelcontextprotocol/server` `^2.4.0`, `@modelcontextprotocol/node` `^2.1.2`, and
+`@modelcontextprotocol/client` `^2.4.0` for tests) with **dual-era
 serving**: one shared `McpServerFactory` behind `createMcpHandler({ legacy: 'stateless' })`
 answers both 2025-era `initialize`-handshake clients (the WYRE gateway today) and modern
 2026-07-28 envelope clients, with the same deterministic tool surface for every caller.
@@ -132,6 +133,13 @@ docker run \
   dubber-mcp
 ```
 
+`/health` and MCP `serverInfo` report the version in `package.json`. The committed value is a
+placeholder (semantic-release does not commit its bump), so the Docker build stamps the
+`VERSION` build-arg into it with `scripts/stamp-version.mjs`; without the build-arg it stays
+the placeholder. This has not been run in a real release yet: the first release built with it
+must be checked (`GET /health` on the published image has to show the release version, not
+`0.0.0-semantically-released`).
+
 Compose refuses to start when `CONDUIT_S2S_SECRET` is unset. The gateway service sets
 `AUTH_MODE=gateway`, does not inject `DUBBER_CLIENT_ID`, `DUBBER_CLIENT_SECRET`,
 `DUBBER_AUTH_ID`, or `DUBBER_AUTH_TOKEN`, and publishes `127.0.0.1:8080:8080`:
@@ -157,14 +165,15 @@ docker run \
 
 Dubber's recordings endpoint documents only `count` (max 100), `page`, a `before_id` cursor,
 `dub_point` and `team` — no `limit`/`offset`, no date filter and no search, and it silently
-ignores unknown params (so this server offers no `query` input: an ignored filter would
-quietly return every recording). `dubber_recordings_list` therefore pages Dubber itself (`count=100`, chaining
+ignores unknown params (so this server offers no `query` input and rejects one: an ignored
+filter would quietly return every recording). `dubber_recordings_list` therefore pages Dubber itself (`count=100`, chaining
 `before_id`) and applies the rest server-side:
 
 - `limit` (1–500, default 100): max matching recordings returned. `offset` (≥0): matching
   recordings (newest first) to skip.
 - `startTimeFrom` (inclusive) / `startTimeTo` (exclusive for date-times; a date-only value
-  includes the whole day): ISO 8601, no offset = UTC. They filter on each recording's
+  includes the whole day): ISO 8601, no offset = UTC (a date-only or offsetless bound adds a
+note saying it was read as UTC; pass an explicit offset for a local window). They filter on each recording's
   `start_time` after fetching; recordings with an unparseable `start_time` are excluded and
   counted in `excludedUnparseableStartTime`. Weekly pull in Melbourne daylight time (AEDT, +11:00), Mon–Fri:
   `startTimeFrom=2026-10-19T00:00:00+11:00`, `startTimeTo=2026-10-24T00:00:00+11:00`, `limit=500`.
@@ -224,12 +233,13 @@ The fleet template contract, as implemented here:
   credentials and access token in use. Every log line is redacted for the S2S secret, env and
   per-request credentials and their access token, bearer tokens, and signed-URL signatures. Logs carry tool names, status and
   request ids only, never arguments or results.
-- **Tokens** are cached per credential set and reused for the first half of their lifetime
+- **Tokens** are cached per credential set and reused for 90% of their lifetime
   (at most until 30 minutes before expiry; a missing `expires_in` counts as Dubber's documented
   24 h). Dubber caps tokens at about 500 per 24 h and its sample token lives 240 s, so minting
-  per call is not an option. After a 401 on a cached token, the server mints once more; a 401
-  on a token minted for that call is returned as is (Dubber also uses 401 for "no access to
-  this resource"). Nothing else is retried.
+  per call is not an option. After a 401 on a cached token, the server mints once more, but at
+  most once per 10 minutes per credential set; a 401 on a token minted for that call, or inside
+  that window, is returned as is (Dubber also uses 401 for "no access to this resource").
+  Nothing else is retried.
 - **Per-request scope.** In gateway mode the X-Dubber-* credentials and the effective tiers
   live in an AsyncLocalStorage scope for exactly one request.
 
