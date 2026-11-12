@@ -12,6 +12,8 @@ let mints: number;
 /** Statuses the next GET /profile calls answer with, in order; 200 once the queue is empty. */
 let profileStatuses: number[];
 let profileCalls: number;
+/** Access tokens Dubber has revoked: every call carrying one answers 401. */
+let revokedTokens: Set<string>;
 let api: DubberApi;
 
 beforeEach(() => {
@@ -21,9 +23,10 @@ beforeEach(() => {
   mints = 0;
   profileStatuses = [];
   profileCalls = 0;
+  revokedTokens = new Set();
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: string | URL | Request) => {
+    vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
       if (url.pathname.endsWith("/token")) {
         mints += 1;
@@ -34,7 +37,9 @@ beforeEach(() => {
         });
       }
       profileCalls += 1;
-      const status = profileStatuses.shift() ?? 200;
+      const bearer = (init?.headers as Record<string, string> | undefined)?.["Authorization"]?.replace("Bearer ", "");
+      const revoked = bearer !== undefined && revokedTokens.has(bearer);
+      const status = revoked ? 401 : (profileStatuses.shift() ?? 200);
       return new Response(JSON.stringify(status === 200 ? { ok: true } : { message: "Unauthorized" }), {
         status,
         headers: { "content-type": "application/json" },
@@ -78,6 +83,16 @@ describe("401 on a cached token", () => {
     profileStatuses = [401, 200];
     await expect(api.request("/profile")).resolves.toEqual({ ok: true });
     expect(mints).toBe(3);
+  });
+
+  it("lets concurrent calls on the same revoked token share one re-mint instead of failing", async () => {
+    await api.request("/profile");
+    expect(mints).toBe(1);
+
+    revokedTokens.add("tok-1");
+    const results = await Promise.allSettled([api.request("/profile"), api.request("/profile"), api.request("/profile")]);
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled", "fulfilled"]);
+    expect(mints).toBe(2);
   });
 
   it("keeps the window per credential set", async () => {

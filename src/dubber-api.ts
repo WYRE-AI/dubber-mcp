@@ -66,6 +66,8 @@ const MAX_ERROR_BODY_BYTES = 64 * 1024;
 
 /** At most one 401-triggered re-mint per credential cache entry in this window (Dubber caps mints at ~500/24 h). */
 const REMINT_WINDOW_MS = 10 * 60_000;
+/** Above this many tracked credential sets, expired window entries are swept. */
+const MAX_REMINT_ENTRIES = 1000;
 
 const tokenCache = new TokenCache();
 const inFlight = new Map<string, Promise<DubberToken>>();
@@ -84,6 +86,10 @@ function takeRemint(key: string): boolean {
   const now = Date.now();
   const last = lastRemintAt.get(key);
   if (last !== undefined && now - last < REMINT_WINDOW_MS) return false;
+  if (lastRemintAt.size >= MAX_REMINT_ENTRIES) {
+    // Entries outside the window no longer limit anything; drop them so the map stays small.
+    for (const [k, at] of lastRemintAt) if (now - at >= REMINT_WINDOW_MS) lastRemintAt.delete(k);
+  }
   lastRemintAt.set(key, now);
   return true;
 }
@@ -288,13 +294,19 @@ class GuardedHttp {
         method: "GET",
         headers: { Accept: "application/json", Authorization: `Bearer ${token.accessToken}` },
       });
-      if (res.status === 401 && cached && attempt === 0 && takeRemint(cacheKey(this.creds))) {
-        // A cached token may have been revoked or expired early: mint once more, but at most
-        // once per 10 minutes, because Dubber answers 401 for plain "no access" too and caps mints.
-        // A token minted for this call is kept: its 401 is an access answer.
-        await res.body?.cancel().catch(() => undefined);
-        tokenCache.delete(cacheKey(this.creds));
-        continue;
+      if (res.status === 401 && cached && attempt === 0) {
+        // A cached token may have been revoked or expired early. If a concurrent call already
+        // replaced it (or is minting), retry with the new token at no cost. Otherwise mint once
+        // more, but at most once per 10 minutes, because Dubber answers 401 for plain "no access"
+        // too and caps mints. A token minted for this call is kept: its 401 is an access answer.
+        const key = cacheKey(this.creds);
+        const replaced = tokenCache.get(key)?.accessToken !== token.accessToken || inFlight.has(key);
+        if (replaced || takeRemint(key)) {
+          // Drop the stale token before the first await, so concurrent 401s see it replaced.
+          if (!replaced) tokenCache.delete(key);
+          await res.body?.cancel().catch(() => undefined);
+          continue;
+        }
       }
       if (!res.ok) throw await vendorError(res);
       return parseBody(await readBounded(res, MAX_UPSTREAM_BYTES)) as T;
