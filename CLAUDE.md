@@ -86,17 +86,12 @@ decisions: `docs/DESIGN.md`.
   `accounts_create` sent `group_id`/`timezone` instead of `group`/`time_zone`; `users_create`
   sent an undocumented `name`; the multipart upload sent `{}` to `complete_upload`). If writes
   come back, build them from the official samples with fetch-level tests, as separate PRs.
-- **Conduit follow-up before any repin (prod pins v1.0.1, 37 tools):** in the Conduit repo,
-  update `tests/mcp/manifests/container-tools.json` (16 tools, including the new
-  `dubber_recordings_get_link` and `dubber_groups_list_unidentified_dub_points`), prune the
-  dubber write/admin rows and the renamed/removed read rows in the result-cache table in
-  `src/proxy/result-cache.ts`, and drop the dubber entries in the tool-naming exceptions table
-  in `src/access/tool-naming-exceptions.ts`. Do not move PR #2248 to this image
-  without that.
+- **Gateway follow-up before any repin:** the gateway's tool manifest, result-cache table and
+  tool-naming exceptions must be updated for the 16-tool surface before it repins to this
+  image.
 - **Dubber's sample token lives 240 s** (Authorization_by_Password). A fixed 30-minute refresh
   margin meant every call minted, against a ~500 tokens/24 h cap. The margin is now
-  a tenth of the lifetime (so a token is reused for 90% of it; ≤30 min, ≥5 s: see `mint()` in
-  `dubber-api.ts`) and a missing `expires_in` means 24 h. Test fixtures use
+  a tenth of the lifetime, clamped to 5 s .. 30 min (see `mint()` in `dubber-api.ts`), and a missing `expires_in` means 24 h. Test fixtures use
   240, not 86400, so this can't hide again.
 - **Dubber rate-limits with 403, not 429** (codes 1021 QPS, 1022 daily, 1024; or an "Over
   Rate Limit" message). `rateLimitOf()` in `dubber-api.ts` classifies them; without it the
@@ -145,8 +140,9 @@ decisions: `docs/DESIGN.md`.
   build it inside that try. `http-malformed-target.test.ts` sends the raw bytes over `node:net`,
   because HTTP client libraries normalise or reject such targets.
 - **Redaction patterns run over up to 4 MiB of upstream text, so they must be linear.** The JWT
-  pattern with unbounded `[A-Za-z0-9_-]{8,}` segments was quadratic on repeated `eyJ-`. It now
-  has 8 to 2048 character segments and no hyphen in the first one. A regex that blocks the
+  pattern with a hyphen in its first segment was quadratic on repeated `eyJ-`. The first
+  segment is now hyphen-free, which is what makes it linear. Segments 2 and 3 are unbounded: a
+  2048 cap let tokens with large claim sets (group or role lists) through unredacted. A regex that blocks the
   event loop also blocks vitest's own timeout, so the regression test hangs instead of failing
   when it breaks. Key-name redaction covers any non-null value (numbers, booleans, objects,
   arrays), not only strings.
@@ -154,9 +150,13 @@ decisions: `docs/DESIGN.md`.
   "no access" as well, and a caller that keeps asking for an inaccessible resource re-minted
   on every call, against the ~500 mints/24 h cap. `takeRemint` in `dubber-api.ts` allows one
   401-triggered mint per credential cache entry per 10 minutes; a 401 inside the window is
-  returned as is. Tests fake `Date` only (`vi.useFakeTimers({ toFake: ["Date"] })`).
+  returned as is, unless a concurrent call already replaced the cached token (or a mint is in
+  flight): then the 401 retries with the new token and mints nothing. The stale token is
+  dropped before the first `await`, so parallel 401s see it replaced. Tests fake `Date` only
+  (`vi.useFakeTimers({ toFake: ["Date"] })`).
 - **semantic-release does not commit its version bump, so `package.json` stays at the
-  placeholder.** Released images therefore reported `0.0.0-semantically-released` on `/health`.
+  placeholder.** An image released from this branch would therefore have reported
+  `0.0.0-semantically-released` on `/health`.
   The Dockerfile builder stage now copies `scripts/stamp-version.mjs` and runs it with the
   `VERSION` build-arg (the one that feeds the OCI labels) before `npm run build`; `unknown` or
   empty leaves the file alone. Docker was not run while writing this: the first release built

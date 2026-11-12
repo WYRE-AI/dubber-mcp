@@ -9,15 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This is a breaking release (v2.0.0): the server becomes read-only.
 
-### Migration from v1.1.0
-
-The 23 tools that no longer exist are the 21 write and admin tools listed under Removed, plus
+**Migration from v1.1.0.** The 23 tools that no longer exist are the 21 write and admin tools listed under Removed, plus
 `dubber_notifications_list_unclaimed` and `dubber_groups_list_unidentified_recordings`.
 Calling any of them answers "Unknown tool", and `DUBBER_TOOL_TIERS` accepts only `read`, so a
 deployment that set `write` or `admin` refuses to start until the value is changed. Do creates,
 updates, deletes and uploads in the Dubber portal or with Dubber's API directly. Callers of
 `dubber_users_list` and `dubber_dub_points_list` must read the list from the new `users` /
-`dub_points` field (see Changed).
+`dub_points` field (see Changed). Callers that sent `query` to `dubber_recordings_list` must
+drop it and filter with `dubPointId`, `teamId`, `startTimeFrom` and `startTimeTo`.
 
 ### Added
 
@@ -57,6 +56,9 @@ updates, deletes and uploads in the Dubber portal or with Dubber's API directly.
   `{ users | dub_points, returned, count, page, hasMore, note? }` instead of a bare array, and
   return at most `count` items per call (default 100, max 100; Dubber's own default is 20).
   Read the list from `users` or `dub_points`, and page with `page` while `hasMore` is true.
+- **Breaking:** `dubber_dub_points_find`, `dubber_groups_list_unidentified_dub_points` and
+  `dubber_notifications_list` return `{ returned, <list> }` instead of a bare array, so a
+  trimmed result can say so.
 - **Breaking:** `dubber_recordings_get` no longer takes `listener`; use
   `dubber_recordings_get_link`.
 - **Breaking:** `dubber_dub_points_find` accepts only `external_type`, `service_provider`,
@@ -66,8 +68,8 @@ updates, deletes and uploads in the Dubber portal or with Dubber's API directly.
 - **Breaking:** `CONDUIT_S2S_SECRET` must be at least 32 characters and not a repeated
   pattern; an unknown `AUTH_MODE` or `DUBBER_TOOL_TIERS` entry refuses to start;
   `AUTH_MODE=env` HTTP refuses to start without `DUBBER_*` credentials.
-- Tokens are reused for 90% of their lifetime (at most until 30 minutes before expiry), and a
-  missing `expires_in` counts as 24 h. Previously any token living under 30 minutes, such as
+- Tokens are refreshed a tenth of their lifetime before expiry (no less than 5 seconds and no
+  more than 30 minutes before), and a missing `expires_in` counts as 24 h. Previously any token living under 30 minutes, such as
   Dubber's 240 s sample token, was minted again on every call; at half its lifetime it would
   still have exceeded Dubber's ~500 mints a day under continuous use.
 - Dubber's 403 rate limits (codes 1021/1022/1024, or Mashery's own over-QPS / over-rate 403s
@@ -80,10 +82,12 @@ updates, deletes and uploads in the Dubber portal or with Dubber's API directly.
   image reports its release version on `/health` (not `0.0.0-semantically-released`).
 - A 401 on a cached token re-mints at most once per 10 minutes per credential set; a 401
   inside that window is returned as it is (Dubber caps mints at about 500 per 24 hours).
+  Concurrent calls holding the same revoked token retry with the re-minted one.
 - Time bounds without a UTC offset (`2026-10-23`, `2026-10-23T09:00:00`) are still read as UTC,
   and `dubber_recordings_list` now says so in its `note`.
-- The JWT redaction pattern is bounded, so a hostile body of repeated `eyJ-` can no longer stall
-  the event loop. Values of any type (numbers, booleans, objects, arrays), not only strings,
+- The JWT redaction pattern no longer backtracks quadratically (its first segment excludes the
+  hyphen), so a hostile body of repeated `eyJ-` cannot stall the event loop; JWTs of any size
+  are still redacted. Values of any type (numbers, booleans, objects, arrays), not only strings,
   under a credential-named key are redacted.
 - `dubber_recordings_get_waveform` says it returns a short-lived pre-signed `waveform_url`;
   `dubber_recordings_get` no longer claims to return tags.
@@ -101,7 +105,6 @@ updates, deletes and uploads in the Dubber portal or with Dubber's API directly.
 - CI installs with `--ignore-scripts` and checks out with `persist-credentials: false`; the
   release workflow is pinned to reusable-workflows `508ef4d` with `fail-on-severity:
   HIGH,CRITICAL`.
-
 - A 401 re-mints the token only when the token was taken from the cache. A 401 on a token
   minted for the same call is returned as is and the token stays cached: Dubber also answers
   401 for "no access to this resource", and re-minting spent its ~500 mints/day budget.
@@ -117,9 +120,6 @@ updates, deletes and uploads in the Dubber portal or with Dubber's API directly.
 - Tool output is capped at 60,000 characters, after redaction. List results drop items from
   the end and keep their paging fields (`dubber_recordings_list` resumes from a `nextCursor` at
   the last recording kept); anything else is cut with a `[truncated: ...]` marker.
-- **Breaking:** `dubber_dub_points_find`, `dubber_groups_list_unidentified_dub_points` and
-  `dubber_notifications_list` return `{ returned, <list> }` instead of a bare array, so a
-  trimmed result can say so.
 - `dubber_test_connection` makes one authenticated `GET /profile` instead of only checking for
   a token, so a cached token for revoked credentials no longer reports success.
 
@@ -142,9 +142,10 @@ updates, deletes and uploads in the Dubber portal or with Dubber's API directly.
   not a read.
 - `dubber_groups_list_unidentified_recordings`: it called an undocumented endpoint; replaced by
   `dubber_groups_list_unidentified_dub_points`.
-- The undocumented `query` input on `dubber_recordings_list`. Passing it is now an error that
-  names `dubPointId`, `teamId`, `startTimeFrom` and `startTimeTo`, instead of being silently
-  ignored (which returned every recording).
+- **Breaking:** the `query` input on `dubber_recordings_list` (declared in v1.1.0, but Dubber
+  has no text search, so it never filtered). Passing it is now an error that names
+  `dubPointId`, `teamId`, `startTimeFrom` and `startTimeTo`; `filters.query` is no longer
+  returned.
 
 ### Fixed
 
@@ -152,6 +153,8 @@ updates, deletes and uploads in the Dubber portal or with Dubber's API directly.
   `[`) crashed the process: routing built a URL object before the Host allowlist and the S2S
   gate, and the rejected async handler exited Node. Routing now uses the raw path, and the whole
   handler is wrapped so any error answers 500 and is logged without request headers or bodies.
+  Only origin-form targets match now: an absolute-form target such as `GET http://host/mcp`
+  answers 404.
 
 ### Security
 

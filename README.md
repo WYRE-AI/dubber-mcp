@@ -233,9 +233,9 @@ The fleet template contract, as implemented here:
   credentials and access token in use. Every log line is redacted for the S2S secret, env and
   per-request credentials and their access token, bearer tokens, and signed-URL signatures. Logs carry tool names, status and
   request ids only, never arguments or results.
-- **Tokens** are cached per credential set and reused for 90% of their lifetime
-  (at most until 30 minutes before expiry; a missing `expires_in` counts as Dubber's documented
-  24 h). Dubber caps tokens at about 500 per 24 h and its sample token lives 240 s, so minting
+- **Tokens** are cached per credential set and refreshed a tenth of their lifetime before expiry
+  (no less than 5 seconds and no more than 30 minutes before; a missing `expires_in` counts as
+  Dubber's documented 24 h). Dubber caps tokens at about 500 per 24 h and its sample token lives 240 s, so minting
   per call is not an option. After a 401 on a cached token, the server mints once more, but at
   most once per 10 minutes per credential set; a 401 on a token minted for that call, or inside
   that window, is returned as is (Dubber also uses 401 for "no access to this resource").
