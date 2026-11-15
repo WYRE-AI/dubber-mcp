@@ -8,7 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 Restores the v1.1.0 tool surface (WYREAI-567). v2.0.0 removed 23 tools; this release puts
-them back unchanged and keeps the v2.0.0 additions, so callers of v1.1.0 lose nothing.
+them back unchanged and keeps the v2.0.0 additions, so every v1.1.0 tool name exists again.
+The v2.0.0 read-tool migration notes below still apply to callers coming from v1.1.0: read
+`dubber_users_list` / `dubber_dub_points_list` results from the `users` / `dub_points` field,
+and drop `query` from `dubber_recordings_list`.
 
 ### Fixed
 
@@ -25,6 +28,8 @@ them back unchanged and keeps the v2.0.0 additions, so callers of v1.1.0 lose no
   `dubber_notifications_list_unclaimed` and `dubber_groups_list_unidentified_recordings`.
 - `DUBBER_TOOL_TIERS` accepts `read`, `write` and `admin` again and defaults to all three (the
   image sets all three). Destructive tools confirm by elicitation or `confirm_destructive_action`.
+- A destructive confirmation answer is bound to its exact target, so a retried request with
+  different arguments is asked again. The tag-removal prompt names the tag count, not the tags.
 - The guarded transport allows POST, PUT, PATCH and DELETE with JSON bodies (GET still never
   carries a body); fixed origin, exact paths, manual redirects and bounded reads are unchanged.
 

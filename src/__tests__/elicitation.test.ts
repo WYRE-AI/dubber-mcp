@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   CONFIRM_ARG,
   confirmDestructive,
+  confirmKey,
   elicitConfirmation,
   elicitSelection,
   elicitText,
@@ -165,21 +166,30 @@ describe("confirmDestructive (fail-closed gate for irreversible actions)", () =>
   });
 
   it("an answered prompt decides: accept → proceed, reject/decline → refused", () => {
-    expect(confirmDestructive(answered("confirm", { confirm: true }), {}, "m").kind).toBe(
-      "proceed"
-    );
-    expect(confirmDestructive(answered("confirm", { confirm: false }), {}, "m").kind).toBe(
-      "refused"
-    );
+    const K = confirmKey("m");
+    expect(confirmDestructive(answered(K, { confirm: true }), {}, "m").kind).toBe("proceed");
+    expect(confirmDestructive(answered(K, { confirm: false }), {}, "m").kind).toBe("refused");
     expect(
       confirmDestructive(
         {
           clientCapabilities: { elicitation: {} },
-          inputResponses: { confirm: { action: "decline" } },
+          inputResponses: { [K]: { action: "decline" } },
         },
         {},
         "m"
       ).kind
     ).toBe("refused");
+  });
+
+  it("an answer is bound to its target: a different target asks again", () => {
+    const answer = answered(confirmKey("recordings.delete r-1"), { confirm: true });
+    expect(confirmDestructive(answer, {}, "Delete r-1?", "recordings.delete r-1").kind).toBe(
+      "proceed"
+    );
+    expect(confirmDestructive(answer, {}, "Delete r-2?", "recordings.delete r-2").kind).toBe(
+      "ask"
+    );
+    // A bare "confirm" answer (unbound) no longer satisfies a destructive gate.
+    expect(confirmDestructive(answered("confirm", { confirm: true }), {}, "m").kind).toBe("ask");
   });
 });

@@ -105,7 +105,8 @@ async function deleteTags(
   const gate = confirmDestructive(
     elicitation,
     args,
-    `Remove tags [${tags.join(", ")}] from recording ${recordingId}?`
+    `Remove ${tags.length} tag${tags.length === 1 ? "" : "s"} from recording ${recordingId}?`,
+    `recordings.deleteTags ${recordingId} ${JSON.stringify(tags)}`
   );
   if (gate.kind === "ask") return gate.result;
   if (gate.kind === "blocked") return errorResult(gate.message);

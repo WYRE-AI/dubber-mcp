@@ -406,7 +406,10 @@ export function createDubberApi(creds: DubberCredentials): DubberApi {
       });
       if (!res.ok) throw await vendorError(res);
       await res.body?.cancel().catch(() => undefined);
-      tokenCache.delete(cacheKey(creds));
+      // Drop the entry only if it still holds the revoked token: a concurrent
+      // call may have cached a replacement during the await.
+      const key = cacheKey(creds);
+      if (tokenCache.get(key)?.accessToken === token.accessToken) tokenCache.delete(key);
     },
   };
 }

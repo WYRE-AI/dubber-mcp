@@ -77,9 +77,9 @@ over-QPS and over-rate rejections) are reported as rate limits, not access error
 Path IDs are validated in the handlers (`requireId`) before node-dubber
 percent-encodes them.
 
-`read` is the only tool tier. `DUBBER_TOOL_TIERS` accepts only `read` (anything else
-refuses to start). `X-Conduit-Tool-Tiers` can only narrow, and an empty header means zero
-tools; Conduit does not send it yet.
+Tool tiers are `read`, `write` and `admin`. `DUBBER_TOOL_TIERS` takes a comma-separated
+subset and defaults to all three (an unknown entry refuses to start). `X-Conduit-Tool-Tiers`
+can only narrow, and an empty header means zero tools; Conduit does not send it yet.
 
 Unlike kpn-mcp's dual-realm (gateway + MSM) credential shape, Dubber has one
 token realm and one credential set — no optional/paired-fallback logic

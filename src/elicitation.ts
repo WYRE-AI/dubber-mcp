@@ -22,6 +22,7 @@
  * runs unconfirmed. `confirmDestructive` below fails closed instead: it blocks
  * with an actionable error unless the caller passed `CONFIRM_ARG` explicitly.
  */
+import { createHash } from "node:crypto";
 import { inputRequired, inputResponse } from "@modelcontextprotocol/server";
 import type { ClientCapabilities, InputRequiredResult } from "@modelcontextprotocol/server";
 
@@ -68,19 +69,20 @@ function supportsFormElicitation(ctx: ElicitationContext): boolean {
 }
 
 /**
- * Shared MRTR seam: read the retried request's response for `key`, or build
- * the `input_required` result asking for it. `read` extracts the typed
- * answer from accepted content; `undefined` reads as a decline (the values
- * arrive from the client and are untrusted).
+ * Shared MRTR seam: read the retried request's response for `requestKey`, or
+ * build the `input_required` result asking for the field `key`. `read`
+ * extracts the typed answer from accepted content; `undefined` reads as a
+ * decline (the values arrive from the client and are untrusted).
  */
 function elicit<T>(
   ctx: ElicitationContext,
   key: string,
   properties: Record<string, unknown>,
   message: string,
-  read: (content: Record<string, unknown>) => T | undefined
+  read: (content: Record<string, unknown>) => T | undefined,
+  requestKey: string = key
 ): ElicitOutcome<T> {
-  const response = inputResponse(ctx.inputResponses, key);
+  const response = inputResponse(ctx.inputResponses, requestKey);
   if (response.kind === "elicit") {
     if (response.action === "accept" && response.content) {
       const value = read(response.content);
@@ -93,7 +95,7 @@ function elicit<T>(
     kind: "ask",
     result: inputRequired({
       inputRequests: {
-        [key]: inputRequired.elicit({
+        [requestKey]: inputRequired.elicit({
           message,
           requestedSchema: {
             type: "object",
@@ -157,7 +159,8 @@ export function elicitText(
 }
 
 /**
- * Ask the user to confirm an action (keyed `confirm`). An accepted
+ * Ask the user to confirm an action (field `confirm`; the input request is
+ * keyed `requestKey`, `confirm` by default). An accepted
  * `confirm: false` reads as an answer of `false`, which — like `declined` —
  * means cancel. Destructive callers must not consume this outcome directly:
  * route them through `confirmDestructive`, which owns what `unavailable`
@@ -165,7 +168,8 @@ export function elicitText(
  */
 export function elicitConfirmation(
   ctx: ElicitationContext,
-  message: string
+  message: string,
+  requestKey = "confirm"
 ): ElicitOutcome<boolean> {
   return elicit(
     ctx,
@@ -178,8 +182,19 @@ export function elicitConfirmation(
       },
     },
     message,
-    (content) => (typeof content.confirm === "boolean" ? content.confirm : undefined)
+    (content) => (typeof content.confirm === "boolean" ? content.confirm : undefined),
+    requestKey
   );
+}
+
+/**
+ * The input-request key for a destructive confirmation, bound to its exact
+ * target (`action`, e.g. "recordings.delete" plus the ids and values it acts
+ * on). A retried request whose arguments changed asks again instead of
+ * reusing an answer given for a different target.
+ */
+export function confirmKey(action: string): string {
+  return `confirm:${createHash("sha256").update(action).digest("hex").slice(0, 32)}`;
 }
 
 /** True when the outcome means the user said no (declined or answered false). */
@@ -225,14 +240,17 @@ export type DestructiveGate =
  * cannot answer has not consented (see the module header).
  *
  * The prompt always wins where it is available: passing the argument never
- * skips a confirmation an interactive user would otherwise have seen.
+ * skips a confirmation an interactive user would otherwise have seen. The
+ * answer is keyed by `target` (default: the message, which names the ids),
+ * so it cannot be replayed for a different target.
  */
 export function confirmDestructive(
   ctx: ElicitationContext,
   args: Record<string, unknown>,
-  message: string
+  message: string,
+  target: string = message
 ): DestructiveGate {
-  const outcome = elicitConfirmation(ctx, message);
+  const outcome = elicitConfirmation(ctx, message, confirmKey(target));
   if (outcome.kind === "ask") return { kind: "ask", result: outcome.result };
   if (outcome.kind === "unavailable") {
     if (args[CONFIRM_ARG] === true) return { kind: "proceed" };

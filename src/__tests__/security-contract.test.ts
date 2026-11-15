@@ -479,7 +479,7 @@ describe("write and admin tools send the v1.1.0 request (real transport, fetch s
     const apiCalls = sent.filter((c) => !c.url.pathname.endsWith("/token"));
     expect(apiCalls.map((c) => `${c.method} ${c.url.pathname}`)).toEqual([`${method} ${path}`]);
     if (body === undefined) expect(apiCalls[0]!.body).toBe("");
-    else expect(JSON.parse(apiCalls[0]!.body)).toMatchObject(body as object);
+    else expect(JSON.parse(apiCalls[0]!.body)).toEqual(body);
   });
 
   it.each(["dubber_recordings_delete", "dubber_users_delete", "dubber_notifications_delete", "dubber_oauth_revoke_token"])(
