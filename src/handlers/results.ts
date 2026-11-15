@@ -1,7 +1,7 @@
 /** Shared tool-result helpers, the handler signature, and argument validation. */
 import { MAX_RESPONSE_CHARS } from "../config.js";
 import type { DubberApi } from "../dubber-api.js";
-import { redactValue } from "../redact.js";
+import { redactText, redactValue } from "../redact.js";
 
 export type ToolContent =
   | { type: "text"; text: string }
@@ -46,8 +46,13 @@ export function listResult(
   items: unknown[],
   onTrim: (kept: unknown[], total: number) => Record<string, unknown>
 ): ToolResult {
+  // Measure the text as it will be sent: mcp-server.ts runs redactText again, and its pattern pass
+  // can lengthen text ("Bearer a" -> "[REDACTED]"), so the patterns are applied here before the size
+  // check (applying them twice is a no-op). Its exact-match pass on the credentials in use can
+  // only shorten text for credentials of 10+ characters (the marker's length); Dubber's client
+  // secrets and auth tokens are long random strings, and truncate() still caps the final text.
   const render = (kept: unknown[], changed: Record<string, unknown> = {}): string =>
-    JSON.stringify(redactValue({ returned: kept.length, ...fields, ...changed, [key]: kept }), null, 2);
+    redactText(JSON.stringify(redactValue({ returned: kept.length, ...fields, ...changed, [key]: kept }), null, 2));
   const full = render(items);
   if (full.length <= MAX_RESPONSE_CHARS || items.length <= 1) return textResult(full);
   const trimmed = (count: number) => {

@@ -218,7 +218,10 @@ function hostAllowed(req: IncomingMessage, allowed: ReadonlySet<string> | null):
   if (!allowed) return true;
   const host = (req.headers.host ?? "").trim().toLowerCase();
   if (!host) return false;
-  return allowed.has(host) || allowed.has(host.replace(/^\[([^\]]+)\](:\d+)?$/, "$1").replace(/:\d+$/, ""));
+  // Drop the port first, then IPv6 brackets: "[::1]:8080" -> "::1", "example.com:443" -> "example.com".
+  const bracketed = /^\[([^\]]+)\](?::\d+)?$/.exec(host);
+  const bare = bracketed ? bracketed[1]! : host.replace(/:\d+$/, "");
+  return allowed.has(host) || allowed.has(bare);
 }
 
 /** stdio (default). Fresh server per process; env-mode credentials (none in gateway mode). */

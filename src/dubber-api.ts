@@ -317,10 +317,15 @@ class GuardedHttp {
   }
 }
 
+/** Outcome of `DubberApi.testConnection` (a token mint with the configured credentials). */
 export interface ConnectionTestResult {
+  /** True when Dubber issued a token. */
   ok: boolean;
+  /** Why the check failed. Absent when `ok` is true. */
   error?: string;
+  /** HTTP status Dubber returned. Absent when `ok` is true or no vendor HTTP response was received (network or timeout failure). */
   status?: number;
+  /** Dubber request ID for the failed call. Absent when `ok` is true or Dubber did not provide one. */
   requestId?: string;
 }
 

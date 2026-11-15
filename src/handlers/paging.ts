@@ -29,8 +29,35 @@ export function pageResult(key: string, items: unknown[], { count, page }: PageA
       : undefined;
   return listResult({ count, page: page ?? null, hasMore, ...(note ? { note } : {}) }, key, items, (kept, total) => ({
     hasMore: true,
-    note: trimNote(kept.length, total, `Call again with a smaller count (e.g. count=${kept.length}) to page through the rest.`),
+    note: trimNote(kept.length, total, rereadGuidance(kept.length, count, page)),
   }));
+}
+
+/**
+ * How to recover the trimmed tail of one page without skipping or repeating items.
+ * Dubber pages are `count`-sized blocks, so a smaller count must keep the same start offset:
+ * with a divisor `c` of `count`, the original page becomes `count / c` consecutive pages of
+ * size `c`. Dubber does not document whether pages start at 0 or 1, so both numberings are given.
+ */
+export function rereadGuidance(kept: number, count: number, page: number | undefined): string {
+  let c = 1;
+  for (let d = Math.min(kept, count); d >= 1; d--) {
+    if (count % d === 0) {
+      c = d;
+      break;
+    }
+  }
+  const per = count / c;
+  // An omitted page is the first page under either numbering.
+  const zeroStart = (page ?? 0) * per;
+  const oneStart = page === undefined ? 1 : page >= 1 ? (page - 1) * per + 1 : undefined;
+  const span = (start: number) => (per === 1 ? `page=${start}` : `page=${start} through page=${start + per - 1}`);
+  return (
+    "Do not move on to the next page yet, or the dropped items are skipped. Re-read this page's items with " +
+    `count=${c} (it divides ${count}, so the start offset is unchanged): ${span(zeroStart)} if Dubber pages start at 0` +
+    (oneStart === undefined ? "" : `, or ${span(oneStart)} if they start at 1`) +
+    `. Then continue with count=${c} from the page after that, skipping ids you already have.`
+  );
 }
 
 /** An unpaged Dubber list: `{ returned, note?, <key>: items }`, trimmed from the end if too long. */

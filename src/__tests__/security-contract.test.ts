@@ -478,14 +478,18 @@ describe(`tool output is capped at ${MAX_RESPONSE_CHARS} characters without losi
   it.each([
     ["dubber_users_list", "users", { users: Array.from({ length: 100 }, (_, i) => ({ id: `u-${i}`, notes: PAD })) }],
     ["dubber_dub_points_list", "dub_points", { dub_points: Array.from({ length: 100 }, (_, i) => ({ id: `d-${i}`, notes: PAD })) }],
-  ])("%s keeps count/page and says to ask for a smaller count", async (name, key, payload) => {
+  ])("%s keeps count/page and says how to re-read the dropped tail from the same offset", async (name, key, payload) => {
     respond = () => json(payload);
     const out = text(await handleToolCall(createDubberApi(CREDS), name, { accountId: "a-1", count: 100, page: 3 }));
     expect(out.length).toBeLessThanOrEqual(MAX_RESPONSE_CHARS);
     const body = JSON.parse(out);
     expect(body[key].length).toBeLessThan(100);
     expect(body).toMatchObject({ returned: body[key].length, count: 100, page: 3, hasMore: true });
-    expect(body.note).toContain("smaller count");
+    // page=3 of count=100 starts at item 300 (0-based) or 200 (1-based); count=50 keeps that offset.
+    expect(body.note).toContain("count=50");
+    expect(body.note).toContain("page=6 through page=7 if Dubber pages start at 0");
+    expect(body.note).toContain("page=5 through page=6 if they start at 1");
+    expect(body.note).not.toContain("page=4");
   });
 
   it.each([

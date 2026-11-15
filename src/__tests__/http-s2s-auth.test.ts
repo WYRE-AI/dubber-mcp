@@ -781,6 +781,18 @@ describe("HTTP Host allowlist (MCP_ALLOWED_HOSTS, DNS-rebinding guard)", () => {
     expect(outbound).toEqual([]);
   });
 
+  it("matches a bracketed IPv6 Host with a port against the bare address", async () => {
+    process.env.CONDUIT_S2S_SECRET = S2S_SECRET;
+    process.env.AUTH_MODE = "gateway";
+    process.env.MCP_ALLOWED_HOSTS = "::1";
+    const { port } = await listen();
+    const s2s = { "x-gateway-s2s": mintS2sHeader(S2S_SECRET), ...gatewayHeaders };
+    expect(await postWithHost(port, `[::1]:${port}`, s2s)).toBe(200);
+    expect(await postWithHost(port, "[::1]", s2s)).toBe(200);
+    expect(await postWithHost(port, `[::2]:${port}`, s2s)).toBe(403);
+    expect(await postWithHost(port, `evil.example:${port}`, s2s)).toBe(403);
+  });
+
   it("is off when MCP_ALLOWED_HOSTS is unset and a secret is configured", async () => {
     process.env.CONDUIT_S2S_SECRET = S2S_SECRET;
     process.env.AUTH_MODE = "gateway";
