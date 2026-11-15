@@ -70,6 +70,8 @@ interface Body {
   requests: number;
   scanCapReached: boolean;
   rateLimited?: boolean;
+  rateLimitCode?: number;
+  rateLimitStatus?: number;
   note?: string;
 }
 
@@ -149,8 +151,36 @@ describe("dubber_dub_points_list reads every page by default", () => {
     const fake = install(450);
     fake.rateLimitOnRequest = 3;
     const { body } = await call({ limit: 1000 });
-    expect(body).toMatchObject({ returned: 200, hasMore: true, nextOffset: 200, rateLimited: true });
-    expect(body.note).toContain("rate limit");
+    expect(body).toMatchObject({
+      returned: 200,
+      hasMore: true,
+      nextOffset: 200,
+      rateLimited: true,
+      rateLimitCode: 1021,
+      rateLimitStatus: 403,
+    });
+    expect(body.note).toContain("rate limit (code 1021)");
+    expect(body.note?.match(/offset=\d+/g)).toEqual(["offset=200"]);
+  });
+
+  it("a trimmed rate-limited result gives only the trimmed continuation offset", async () => {
+    const fake = install(450, { pad: "x".repeat(1_000) });
+    fake.rateLimitOnRequest = 3;
+    const { body } = await call({ limit: 1000 });
+    const kept = body.returned;
+    expect(kept).toBeLessThan(200);
+    expect(body).toMatchObject({ hasMore: true, nextOffset: kept, rateLimited: true, rateLimitCode: 1021 });
+    expect(body.note?.match(/offset=\d+/g)).toEqual([`offset=${kept}`]);
+    expect(body.note).toContain("rate limit (code 1021)");
+  });
+
+  it("after the request cap with every scanned item returned, nextOffset is null and the note points past the scan", async () => {
+    install(1500);
+    const { body } = await call({ offset: 950, limit: 50 });
+    expect(ids(body)).toEqual(range(950, 1000));
+    expect(body).toMatchObject({ hasMore: true, nextOffset: null, scanCapReached: true });
+    expect(body.note).toContain("page=10");
+    expect(body.note).not.toMatch(/offset=/);
   });
 
   it("a rate limit on the first request is an error", async () => {

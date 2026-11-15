@@ -40,8 +40,16 @@ does not send it yet.
   `dubber_dub_points_find` (`external_type`, `service_provider`, `external_group`,
   `external_identifier`).
 
-List tools that page (`users`, `dub_points`) return `{ <items>, returned, count, page, hasMore }`;
-`hasMore` is true when a full page came back.
+`dubber_users_list`, and `dubber_dub_points_list` called with `page`, return one raw Dubber page:
+`{ <items>, returned, count, page, hasMore }`, where `hasMore` is true when a full page came back.
+
+`dubber_dub_points_list` without `page` reads every page itself (count=100 per request, at most
+10 requests, deduped by id) and returns `{ dub_points, returned, allPages, hasMore, nextOffset,
+offset, limit, requests, scanCapReached, note? }` with up to `limit` dub points (default 200, max
+1,000) from `offset`. While `hasMore` is true, call again with `offset=nextOffset`; when
+`nextOffset` is null (the 10-request scan cap was reached and every scanned item was returned),
+follow `note`, which says which raw `page` to read next. A rate limit after the first page
+returns what was read, with `rateLimited`, `rateLimitCode` and `rateLimitStatus`.
 
 ## Credentials
 

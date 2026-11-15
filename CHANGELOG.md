@@ -57,10 +57,15 @@ drop it and filter with `dubPointId`, `teamId`, `startTimeFrom` and `startTimeTo
 
 - **Breaking:** the server is read-only: 16 tools, all `readOnlyHint: true`.
   `DUBBER_TOOL_TIERS` values other than `read` refuse to start.
-- **Breaking:** `dubber_users_list` and `dubber_dub_points_list` return
-  `{ users | dub_points, returned, count, page, hasMore, note? }` instead of a bare array, and
-  return at most `count` items per call (default 100, max 100; Dubber's own default is 20).
-  Read the list from `users` or `dub_points`, and page with `page` while `hasMore` is true.
+- **Breaking:** `dubber_users_list` returns `{ users, returned, count, page, hasMore, note? }`
+  instead of a bare array, at most `count` items per call (default 100, max 100; Dubber's own
+  default is 20). Read the list from `users`, and page with `page` while `hasMore` is true.
+- **Breaking:** `dubber_dub_points_list` returns an object instead of a bare array. By default
+  (no `page`) it is `{ dub_points, returned, allPages, hasMore, nextOffset, offset, limit,
+  requests, scanCapReached, note? }` with up to `limit` items (default 200, max 1,000) read
+  across every page; continue with `offset=nextOffset` while `hasMore` is true and `nextOffset`
+  is not null, otherwise follow `note`. With `page` it is one raw Dubber page,
+  `{ dub_points, returned, count, page, hasMore, note? }`, as for `dubber_users_list`.
 - **Breaking:** `dubber_dub_points_find`, `dubber_groups_list_unidentified_dub_points` and
   `dubber_notifications_list` return `{ returned, <list> }` instead of a bare array, so a
   trimmed result can say so.

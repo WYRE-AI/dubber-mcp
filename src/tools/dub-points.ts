@@ -10,8 +10,9 @@ export const DUB_POINTS_TOOLS: Tool[] = [
     description:
       "List the dub points on a Dubber account, optionally only one user's (userId). Each dub point's `user` " +
       "field is a URL ending in /users/<USER_ID>. By default every page is read (100 per Dubber request, up to " +
-      "10 requests) and up to `limit` dub points are returned from `offset`; if hasMore=true, call again with " +
-      "offset=nextOffset. Pass `page` (and optionally `count`) instead to read one raw Dubber page.",
+      "10 requests) and up to `limit` dub points are returned from `offset`. If hasMore=true and nextOffset is " +
+      "not null, call again with offset=nextOffset; if nextOffset is null, follow the result's note (for example, " +
+      "read raw pages past the scan cap). Pass `page` (and optionally `count`) instead to read one raw Dubber page.",
     inputSchema: {
       type: "object",
       properties: {

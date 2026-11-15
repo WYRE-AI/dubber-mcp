@@ -1,5 +1,5 @@
-import type { DubPoint } from "@wyre-ai/node-dubber";
-import { rateLimitOf, type DubberApi } from "../dubber-api.js";
+import { DubberError, type DubPoint } from "@wyre-ai/node-dubber";
+import { rateLimitOf, type DubberApi, type RateLimitKind } from "../dubber-api.js";
 import { DUB_POINT_FIND_KEYS } from "../tools/dub-points.js";
 import { MAX_PAGE_COUNT, pageArgs, pageResult, unpagedListResult } from "./paging.js";
 import {
@@ -24,7 +24,10 @@ interface WalkResult {
   requests: number;
   /** complete: a short/empty page; enough: offset+limit+1 collected; cap: request cap; no-progress: a full page with no new ids; rate-limited. */
   stop: "complete" | "enough" | "cap" | "no-progress" | "rate-limited";
-  rateLimit?: "daily" | "retry";
+  /** Set when stop is "rate-limited": the classified limit, with Dubber's code when it sent one. */
+  rateLimit?: RateLimitKind;
+  /** HTTP status of the rate-limited response (403 from Dubber, or 429). */
+  rateLimitStatus?: number;
 }
 
 /**
@@ -55,7 +58,13 @@ async function walkDubPoints(client: DubberApi, accountId: string, user: string 
       const rateLimit = rateLimitOf(error);
       // Nothing read yet: report the error. Otherwise keep what was read.
       if (!rateLimit || requests === 0) throw error;
-      return { items, requests, stop: "rate-limited", rateLimit: rateLimit.kind };
+      return {
+        items,
+        requests,
+        stop: "rate-limited",
+        rateLimit,
+        ...(error instanceof DubberError ? { rateLimitStatus: error.statusCode } : {}),
+      };
     }
     requests += 1;
     let fresh = 0;
@@ -89,22 +98,36 @@ async function listAllPages(
   const pastWindow = walk.items.length > offset + limit;
   const incomplete = walk.stop === "cap" || walk.stop === "no-progress" || walk.stop === "rate-limited";
   const hasMore = pastWindow || incomplete;
-  const nextOffset = pastWindow || (incomplete && walk.items.length > offset) ? offset + window.length : null;
+  // A rate limit may lift, so a re-read from nextOffset can get further. After the request cap
+  // or a no-progress stop, a re-read scans the same pages again, so nextOffset is only set
+  // when this window left scanned items unreturned; the note gives the way past the scan.
+  const nextOffset =
+    pastWindow || (walk.stop === "rate-limited" && walk.items.length >= offset) ? offset + window.length : null;
+
+  // `reason` says why the scan stopped short; it never carries an offset, so it stays true
+  // when the result is trimmed. The offset to continue from is added separately.
+  const daily = walk.rateLimit?.kind === "daily";
+  let reason: string | undefined;
+  if (walk.stop === "rate-limited") {
+    const code = walk.rateLimit?.code === undefined ? "" : ` (code ${walk.rateLimit.code})`;
+    reason =
+      `${daily ? "Dubber's daily rate limit" : "Dubber's rate limit"}${code} stopped the scan after ` +
+      `${walk.requests} requests (${walk.items.length} dub points read); ` +
+      (daily ? "continue once the daily quota resets." : "continue in a few seconds.");
+  } else if (walk.stop === "cap") {
+    reason =
+      `Scan cap reached (${walk.requests} Dubber requests, ${walk.items.length} dub points). More may exist past ` +
+      `the scan: read them one page at a time with count=100 and page=${walk.requests} onward.`;
+  } else if (walk.stop === "no-progress") {
+    reason = "Dubber returned a full page with no new dub points, so paging stopped; the list may be incomplete.";
+  }
+  const continueAt = (next: number) => `Call again with offset=${next} (same userId and limit) to continue.`;
 
   let note: string | undefined;
-  if (pastWindow) {
-    note = `More dub points exist. Call again with offset=${offset + window.length} (same userId and limit) to continue.`;
-  } else if (walk.stop === "rate-limited") {
-    note =
-      `${walk.rateLimit === "daily" ? "Dubber's daily rate limit" : "Dubber's rate limit"} stopped the scan after ` +
-      `${walk.requests} requests (${walk.items.length} dub points read). Call again with offset=${offset + window.length} ` +
-      (walk.rateLimit === "daily" ? "once the daily quota resets." : "in a few seconds.");
-  } else if (walk.stop === "cap") {
-    note =
-      `Scan cap reached (${walk.requests} Dubber requests, ${walk.items.length} dub points). More may exist: ` +
-      `read them one page at a time with count=100 and page=${walk.requests} onward.`;
-  } else if (walk.stop === "no-progress") {
-    note = "Dubber returned a full page with no new dub points, so paging stopped; the list may be incomplete.";
+  if (nextOffset !== null) {
+    note = [pastWindow ? "More dub points exist." : undefined, continueAt(nextOffset), reason].filter(Boolean).join(" ");
+  } else if (reason) {
+    note = reason;
   } else if (walk.items.length === 0) {
     note = "No Dub.Point connections.";
   } else if (window.length === 0) {
@@ -119,16 +142,20 @@ async function listAllPages(
     limit,
     requests: walk.requests,
     scanCapReached: walk.stop === "cap",
-    ...(walk.stop === "rate-limited" ? { rateLimited: true } : {}),
+    ...(walk.stop === "rate-limited"
+      ? {
+          rateLimited: true,
+          ...(walk.rateLimit?.code === undefined ? {} : { rateLimitCode: walk.rateLimit.code }),
+          ...(walk.rateLimitStatus === undefined ? {} : { rateLimitStatus: walk.rateLimitStatus }),
+        }
+      : {}),
     ...(note ? { note } : {}),
   };
   return listResult(fields, "dub_points", window, (kept) => ({
     hasMore: true,
     nextOffset: offset + kept.length,
-    note:
-      trimNote(kept.length, window.length, `Call again with offset=${offset + kept.length} (same userId) to continue.`) +
-      // Keep the reason the scan itself stopped early (cap, rate limit, no progress).
-      (incomplete && note ? ` ${note}` : ""),
+    // Only the trimmed offset: the pre-trim continuation would skip the dropped items.
+    note: trimNote(kept.length, window.length, continueAt(offset + kept.length)) + (reason ? ` ${reason}` : ""),
   }));
 }
 
