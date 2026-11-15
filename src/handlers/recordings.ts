@@ -1,10 +1,16 @@
 import type { DubberApi } from "../dubber-api.js";
+import { confirmDestructive, type ElicitationContext } from "../elicitation.js";
 import { listRecordings } from "./recordings-list.js";
 import {
+  errorResult,
   jsonResult,
+  optionalObject,
   optionalString,
   requireId,
+  requireObject,
   requireString,
+  requireStringArray,
+  textResult,
   ToolInputError,
   type ToolHandler,
   type ToolResult,
@@ -50,9 +56,90 @@ async function getWaveform(client: DubberApi, args: Record<string, unknown>): Pr
   return jsonResult(await client.recordings.getWaveform(requireId(args, "recordingId")));
 }
 
+const CANCELLED = "Cancelled — nothing was changed.";
+
+async function create(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
+  const accountId = requireId(args, "accountId");
+  const data = optionalObject(args, "data") ?? {};
+  return jsonResult(await client.recordings.create(accountId, data));
+}
+
+async function deleteRecording(
+  client: DubberApi,
+  args: Record<string, unknown>,
+  elicitation: ElicitationContext
+) {
+  const recordingId = requireId(args, "recordingId");
+  const gate = confirmDestructive(
+    elicitation,
+    args,
+    `Permanently delete recording ${recordingId}? This cannot be undone.`
+  );
+  if (gate.kind === "ask") return gate.result;
+  if (gate.kind === "blocked") return errorResult(gate.message);
+  if (gate.kind === "refused") return textResult(CANCELLED);
+
+  await client.recordings.delete(recordingId);
+  return textResult(`Recording ${recordingId} deleted.`);
+}
+
+async function updateMetadata(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
+  const recordingId = requireId(args, "recordingId");
+  const metadata = requireObject(args, "metadata");
+  return jsonResult(await client.recordings.updateMetadata(recordingId, metadata));
+}
+
+async function addTags(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
+  const recordingId = requireId(args, "recordingId");
+  const tags = requireStringArray(args, "tags");
+  return jsonResult(await client.recordings.addTags(recordingId, tags));
+}
+
+async function deleteTags(
+  client: DubberApi,
+  args: Record<string, unknown>,
+  elicitation: ElicitationContext
+) {
+  const recordingId = requireId(args, "recordingId");
+  const tags = requireStringArray(args, "tags");
+  const gate = confirmDestructive(
+    elicitation,
+    args,
+    `Remove ${tags.length} tag${tags.length === 1 ? "" : "s"} from recording ${recordingId}?`,
+    `recordings.deleteTags ${recordingId} ${JSON.stringify(tags)}`
+  );
+  if (gate.kind === "ask") return gate.result;
+  if (gate.kind === "blocked") return errorResult(gate.message);
+  if (gate.kind === "refused") return textResult(CANCELLED);
+
+  return jsonResult(await client.recordings.deleteTags(recordingId, tags));
+}
+
+async function initiateMultipartUpload(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
+  const accountId = requireId(args, "accountId");
+  const data = optionalObject(args, "data") ?? {};
+  return jsonResult(await client.recordings.initiateMultipart(accountId, data));
+}
+
+async function getUploadTarget(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
+  return jsonResult(await client.recordings.getUploadTarget(requireId(args, "recordingId")));
+}
+
+async function completeUpload(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
+  return jsonResult(await client.recordings.completeUpload(requireId(args, "recordingId")));
+}
+
 export const RECORDINGS_HANDLERS: Record<string, ToolHandler> = {
   dubber_recordings_list: listRecordings,
+  dubber_recordings_create: create,
   dubber_recordings_get: get,
   dubber_recordings_get_link: getLink,
   dubber_recordings_get_waveform: getWaveform,
+  dubber_recordings_delete: deleteRecording,
+  dubber_recordings_update_metadata: updateMetadata,
+  dubber_recordings_add_tags: addTags,
+  dubber_recordings_delete_tags: deleteTags,
+  dubber_recordings_initiate_multipart_upload: initiateMultipartUpload,
+  dubber_recordings_get_upload_target: getUploadTarget,
+  dubber_recordings_complete_upload: completeUpload,
 };

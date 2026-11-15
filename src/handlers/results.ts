@@ -1,6 +1,8 @@
 /** Shared tool-result helpers, the handler signature, and argument validation. */
 import { MAX_RESPONSE_CHARS } from "../config.js";
+import type { InputRequiredResult } from "@modelcontextprotocol/server";
 import type { DubberApi } from "../dubber-api.js";
+import type { ElicitationContext } from "../elicitation.js";
 import { redactText, redactValue } from "../redact.js";
 
 export type ToolContent =
@@ -18,7 +20,11 @@ export interface ToolResult {
  * DubberError, …): the dispatcher in handlers/index.ts turns every throw
  * into an isError result, so nothing ever escapes to the transport.
  */
-export type ToolHandler = (client: DubberApi, args: Record<string, unknown>) => Promise<ToolResult>;
+export type ToolHandler = (
+  client: DubberApi,
+  args: Record<string, unknown>,
+  elicitation: ElicitationContext
+) => Promise<ToolResult | InputRequiredResult>;
 
 /**
  * JSON tool output. Values under credential-named keys are redacted; mcp-server.ts then redacts
@@ -157,4 +163,24 @@ export function requireObject(args: Record<string, unknown>, key: string): Recor
     throw new ToolInputError(`Argument "${key}" is required and must be an object.`);
   }
   return value as Record<string, unknown>;
+}
+
+export function optionalObject(
+  args: Record<string, unknown>,
+  key: string
+): Record<string, unknown> | undefined {
+  const value = args[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new ToolInputError(`Argument "${key}" must be an object.`);
+  }
+  return value as Record<string, unknown>;
+}
+
+export function requireStringArray(args: Record<string, unknown>, key: string): string[] {
+  const value = args[key];
+  if (!Array.isArray(value) || value.length === 0 || !value.every((v) => typeof v === "string")) {
+    throw new ToolInputError(`Argument "${key}" is required and must be a non-empty array of strings.`);
+  }
+  return value as string[];
 }

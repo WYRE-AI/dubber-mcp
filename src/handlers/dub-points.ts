@@ -6,6 +6,7 @@ import {
   jsonResult,
   listResult,
   optionalIntegerInRange,
+  optionalObject,
   requireId,
   requireObject,
   ToolInputError,
@@ -204,8 +205,15 @@ async function find(client: DubberApi, args: Record<string, unknown>): Promise<T
   return unpagedListResult("dub_points", dubPoints, "No matching Dub.Point found.", "Add lookup keys to narrow the query.");
 }
 
+async function create(client: DubberApi, args: Record<string, unknown>): Promise<ToolResult> {
+  const accountId = requireId(args, "accountId");
+  const data = optionalObject(args, "data") ?? {};
+  return jsonResult(await client.dubPoints.create(accountId, data));
+}
+
 export const DUB_POINTS_HANDLERS: Record<string, ToolHandler> = {
   dubber_dub_points_list: list,
+  dubber_dub_points_create: create,
   dubber_dub_points_get: get,
   dubber_dub_points_find: find,
 };

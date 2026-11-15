@@ -51,6 +51,19 @@ export const DUB_POINTS_TOOLS: Tool[] = [
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
   {
+    name: "dubber_dub_points_create",
+    description: "Create a Dub.Point connection on a Dubber account (e.g. to a BroadWorks trunk).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        accountId: { type: "string", description: "Dubber account ID." },
+        data: { type: "object", description: "Dub.Point fields as accepted by the Dubber API." },
+      },
+      required: ["accountId"],
+    },
+    annotations: { readOnlyHint: false, openWorldHint: true },
+  },
+  {
     name: "dubber_dub_points_get",
     description: "Get a Dub.Point's details by ID.",
     inputSchema: {

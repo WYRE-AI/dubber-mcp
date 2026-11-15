@@ -7,7 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-This is a breaking release (v2.0.0): the server becomes read-only.
+Restores the v1.1.0 tool surface (WYREAI-567). v2.0.0 removed 23 tools; this release puts
+them back unchanged and keeps the v2.0.0 additions, so every v1.1.0 tool name exists again.
+The v2.0.0 read-tool migration notes below still apply to callers coming from v1.1.0: read
+`dubber_users_list` / `dubber_dub_points_list` results from the `users` / `dub_points` field,
+and drop `query` from `dubber_recordings_list`.
+
+### Fixed
+
+- Restored, exactly as in v1.1.0 (definitions, annotations, tiers): the 20 write and admin tools
+  (`dubber_groups_create_child`, `dubber_groups_create_unidentified_recording`,
+  `dubber_accounts_create`, `dubber_accounts_update`, `dubber_recordings_create`,
+  `dubber_recordings_delete`, `dubber_recordings_update_metadata`,
+  `dubber_recordings_add_tags`, `dubber_recordings_delete_tags`,
+  `dubber_recordings_initiate_multipart_upload`, `dubber_recordings_complete_upload`,
+  `dubber_users_create`, `dubber_users_update`, `dubber_users_delete`,
+  `dubber_notifications_create`, `dubber_notifications_update`,
+  `dubber_notifications_activate`, `dubber_notifications_delete`, `dubber_dub_points_create`,
+  `dubber_oauth_revoke_token`), plus `dubber_recordings_get_upload_target`,
+  `dubber_notifications_list_unclaimed` and `dubber_groups_list_unidentified_recordings`.
+- `DUBBER_TOOL_TIERS` accepts `read`, `write` and `admin` again and defaults to all three (the
+  image sets all three). Destructive tools confirm by elicitation or `confirm_destructive_action`.
+- A destructive confirmation answer is bound to its exact target, so a retried request with
+  different arguments is asked again. The tag-removal prompt names the tag count, not the tags.
+- The guarded transport allows POST, PUT, PATCH and DELETE with JSON bodies (GET still never
+  carries a body); fixed origin, exact paths, manual redirects and bounded reads are unchanged.
+
+Kept from v2.0.0: `dubber_recordings_get_link`, `dubber_groups_list_unidentified_dub_points`,
+`dubber_dub_points_list` paging, and the other v2.0.0 read-tool changes below.
+
+## [2.0.0]
+
+This was a breaking release: the server became read-only.
 
 **Migration from v1.1.0.** The 23 tools that no longer exist are the 21 write and admin tools listed under Removed, plus
 `dubber_notifications_list_unclaimed` and `dubber_groups_list_unidentified_recordings`.
