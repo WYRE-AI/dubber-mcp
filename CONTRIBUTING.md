@@ -12,10 +12,11 @@ npm install
 ## Workflow
 
 - `npm run build`: tsc build to `dist/`.
-- `npm test`: vitest suite. Handler tests use `src/__tests__/stub-client.ts`, never the network.
-- `npm run lint`: eslint; `npm run typecheck`: `tsc --noEmit`.
-- `node scripts/lint-destructive-warnings.mjs src`: destructive-warning convention gate.
-- `npm run smoke`: dual-era serving proof (run after build).
+- `npm test`: vitest suite. Handler tests use `src/__tests__/stub-client.ts`; transport and
+  end-to-end tests stub `fetch`. Nothing touches the network.
+- `npm run lint`: eslint plus the destructive-warning gate; `npm run typecheck`: `tsc --noEmit`.
+- `npm run lint:destructive`: the destructive-warning convention gate alone.
+- `npm run smoke`: dual-era serving, gateway 401 gate, and stdio proof (run after build).
 
 All of the above must pass before a PR is merged. The build contract is `docs/DESIGN.md`;
 if code and design disagree, fix one of them in the same PR.
@@ -23,15 +24,21 @@ if code and design disagree, fix one of them in the same PR.
 ## Invariants (do not break)
 
 - **Stateless tool surface**: `tools/list` must return the same tools in the same order for
-  every caller. No sessions, no per-user variance, no runtime sorting/filtering.
+  every caller with the same tiers. No sessions, no per-user variance, no runtime sorting.
+  `read` is the only tier; an empty `X-Conduit-Tool-Tiers` header means no tools.
 - **Never `legacy: 'reject'`** on `createMcpHandler`: it turns away every 2025-era client.
 - **401 gate before the handler** in gateway mode; never fall through to env credentials.
-- **No base URL from headers.** `DUBBER_BASE_URL` is env-mode only.
-- **MRTR safety**: every read and elicitation happens before the single mutating Dubber call.
+- **No base URL at all.** The origin is `https://api.dubber.net`; the region is allowlisted.
+- **Every Dubber request goes through `src/dubber-api.ts`** (exact-path check, no
+  redirects, bounded reads). Never call the SDK's `DubberClient` or `fetch` directly.
+- **Path IDs use `requireId`**, never `requireString`.
+- **Read-only server.** Every tool is `readOnlyHint: true` and sends only GETs (plus the
+  token mint); `security-contract.test.ts` asserts each tool's exact method, path and query.
+  Do not add a tool that changes Dubber state, or whose result grants write access (e.g. an
+  upload URL), or an endpoint with side effects on GET (e.g. releasing unclaimed
+  notifications).
 - Every handler returns `isError` results and never throws; empty results are `isError`
   with an explicit "no X found" message.
-- Gated tools carry the description warning prefix, `CONFIRM_ARG_PROPERTY`, and end with
-  "Confirm with the user before invoking."
 - `/health` stays shallow and unauthenticated. Logs never contain tool arguments, results
   or credentials.
 

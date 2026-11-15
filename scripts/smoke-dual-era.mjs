@@ -10,6 +10,8 @@
 //       headers rather than falling through to env-configured ones. That
 //       fallthrough would be a cross-tenant leak, so it is asserted here and
 //       not only unit-tested against a hand-mirrored replica of the router.
+//   (d) STDIO leg — the default surface is the 16 read tools, and a
+//       traversal id is refused before any network call.
 // Run after `npm run build`:
 //   node scripts/smoke-dual-era.mjs
 
@@ -186,6 +188,42 @@ async function modernLeg() {
   return tools;
 }
 
+/**
+ * stdio leg: the default (read) surface only, every tool annotated
+ * read-only, and a traversal id refused before any network call.
+ */
+async function stdioLeg() {
+  console.log('\nSTDIO leg (default tiers, no network):');
+  const { Client } = await import('@modelcontextprotocol/client');
+  const { StdioClientTransport } = await import('@modelcontextprotocol/client/stdio');
+  const client = new Client({ name: 'smoke-stdio', version: '0.0.0' });
+  await client.connect(new StdioClientTransport({
+    command: process.execPath,
+    args: [serverEntry],
+    env: {
+      PATH: process.env.PATH ?? '',
+      LOG_LEVEL: 'error',
+      DUBBER_CLIENT_ID: 'smoke-client-id',
+      DUBBER_CLIENT_SECRET: 'smoke-client-secret',
+      DUBBER_AUTH_ID: 'smoke-auth-id',
+      DUBBER_AUTH_TOKEN: 'smoke-auth-token',
+    },
+  }));
+  try {
+    const { tools } = await client.listTools();
+    check('stdio serves the 16 read tools by default', tools.length === 16, `count=${tools.length}`);
+    check('every default tool is annotated read-only',
+      tools.every((t) => t.annotations?.readOnlyHint === true && t.annotations?.destructiveHint !== true));
+    const refused = await client.callTool({ name: 'dubber_recordings_get', arguments: { recordingId: '..' } });
+    const text = refused.content?.[0]?.text ?? '';
+    check('traversal id refused before any request', refused.isError === true && text.includes('single ID'), text.slice(0, 120));
+    const hidden = await client.callTool({ name: 'dubber_users_delete', arguments: { userId: 'u-1' } });
+    check('no write or admin tool exists (read-only server)', hidden.isError === true, hidden.content?.[0]?.text ?? '');
+  } finally {
+    await client.close();
+  }
+}
+
 async function main() {
   if (!existsSync(serverEntry)) {
     console.error(`Missing ${serverEntry} — run 'npm run build' first.`);
@@ -228,6 +266,7 @@ async function main() {
     check('both eras serve the same tool names', drift.length === 0, drift.join(', ') || 'no drift');
 
     await gatewayLeg(modernTools.length);
+    await stdioLeg();
   } catch (error) {
     check('smoke run completed without exception', false, String(error));
   } finally {

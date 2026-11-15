@@ -11,20 +11,23 @@ on:
 # detection + correct gating) lives in WYRE-AI/reusable-workflows so every *-mcp
 # repo stays in lockstep instead of drifting per-repo. Caller jobs grant the
 # token scopes the reusable jobs request (a reusable can only reduce, never
-# expand, caller-granted scope).
+# expand, caller-granted scope). The reusable supplies GitHub Packages auth to
+# the Docker build as the `npmrc` BuildKit secret the Dockerfile mounts.
 jobs:
   release:
     permissions:
+      actions: read # Security Scan: SARIF upload reads run metadata
       contents: write
       issues: write
       pull-requests: write  # @semantic-release/github success step reads/comments on PRs
       packages: write
       id-token: write
       security-events: write
-    uses: WYRE-AI/reusable-workflows/.github/workflows/mcp-server-release.yml@2b0b056bd7544937e5cbd56cf2e1ff8a180a411f
+    uses: WYRE-AI/reusable-workflows/.github/workflows/mcp-server-release.yml@508ef4ddcd19285d108423a27f44078a15451575
     with:
       server-name: dubber-mcp
       image-name: ghcr.io/wyre-ai/dubber-mcp
+      fail-on-severity: HIGH,CRITICAL
     secrets: inherit
 
 # NO `deploy:` job — deliberate. Dubber is a CONDUIT-ONLY vendor, matching

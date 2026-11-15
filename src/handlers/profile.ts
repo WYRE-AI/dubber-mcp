@@ -1,7 +1,7 @@
-import type { DubberClient } from "@wyre-ai/node-dubber";
+import type { DubberApi } from "../dubber-api.js";
 import { jsonResult, type ToolHandler, type ToolResult } from "./results.js";
 
-async function get(client: DubberClient): Promise<ToolResult> {
+async function get(client: DubberApi): Promise<ToolResult> {
   return jsonResult(await client.profile.get());
 }
 

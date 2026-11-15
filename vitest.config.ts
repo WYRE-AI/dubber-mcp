@@ -10,6 +10,8 @@ export default defineConfig({
       reporter: ["text", "json", "html"],
       exclude: ["node_modules", "dist", "**/*.test.ts", "src/__tests__/stub-client.ts"],
     },
+    // Quiet by default; tests that assert on logs capture stderr themselves.
+    env: { LOG_LEVEL: "error" },
     mockReset: true,
     restoreMocks: true,
   },

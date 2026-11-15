@@ -1,0 +1,7 @@
+title = "dubber-mcp gitleaks config"
+
+[extend]
+useDefault = true
+
+# No allowlist: the test suite generates its S2S secret per run instead of
+# committing one. If a fixture is ever needed, anchor it to its full value.

@@ -1,0 +1,24 @@
+name: mcp-assert
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  # The reusable job's NODE_AUTH_TOKEN satisfies this repo's .npmrc, which
+  # maps @wyre-ai/* to GitHub Packages.
+  assert:
+    permissions:
+      contents: read
+      packages: read
+    uses: wyre-technology/.github/.github/workflows/mcp-assert.yml@06856d54d8829929e387523e6c1767d54416e978 # main
+    with:
+      entry: dist/entry.js
+      canary-tool: dubber_profile_get
+      extra-suite: evals

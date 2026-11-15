@@ -7,184 +7,100 @@
  * `initialize` handshake) statelessly per request, and modern 2026-07-28
  * envelope clients natively.
  *
- * Statelessness is a protocol invariant here: `tools/list` returns the same
- * module-scope TOOLS array (by reference, deterministic order) for every
- * caller, every era, every request. No sessions, no per-user variance.
+ * `tools/list` returns the enabled tiers' slice of TOOLS (toolsForTiers):
+ * deterministic order, the same array for the same tiers, never varied by
+ * credentials. A tool outside the enabled tiers is answered exactly like an
+ * unknown tool.
  */
 import { Server } from "@modelcontextprotocol/server";
 import type { McpServerFactory } from "@modelcontextprotocol/server";
-import { DubberClient, DEFAULT_REGION } from "@wyre-ai/node-dubber";
+import { configuredTiers, isGatewayMode, MAX_RESPONSE_CHARS, type ToolTier } from "./config.js";
+import { resolveEnvCredentials, type DubberCredentials } from "./credentials.js";
+import { createDubberApi, secretsInUse, type DubberApi } from "./dubber-api.js";
 import { handleToolCall } from "./handlers/index.js";
-import { errorResult } from "./handlers/results.js";
-import { TOOLS } from "./tools/index.js";
+import { errorResult, type ToolResult } from "./handlers/results.js";
+import { redactText, truncate } from "./redact.js";
+import { currentRequestScope } from "./request-scope.js";
+import { toolsForTiers } from "./tools/index.js";
 import { logger } from "./utils/logger.js";
+import { VERSION } from "./version.js";
+
+export {
+  buildCredentials,
+  GATEWAY_HEADERS,
+  REQUIRED_GATEWAY_HEADERS,
+  resolveEnvCredentials,
+  resolveGatewayCredentials,
+  type DubberCredentials,
+} from "./credentials.js";
 
 export const SERVER_NAME = "dubber-mcp";
-export const SERVER_VERSION = "1.0.0";
-
-export interface DubberCredentials {
-  clientId: string;
-  clientSecret: string;
-  authId: string;
-  authToken: string;
-  /** Default {@link DEFAULT_REGION} ("sandbox") when unset. */
-  region?: string;
-  /**
-   * Env mode only. Never read from a header: a caller-chosen base URL would
-   * make the server send client secrets to (and fetch from) any host.
-   */
-  baseUrl?: string;
-}
-
-/** Exact gateway header names — lowercased by Node on receipt. */
-export const GATEWAY_HEADERS = [
-  "X-Dubber-Client-Id",
-  "X-Dubber-Client-Secret",
-  "X-Dubber-Auth-Id",
-  "X-Dubber-Auth-Token",
-  "X-Dubber-Region",
-] as const;
-
-export const REQUIRED_GATEWAY_HEADERS = [
-  "X-Dubber-Client-Id",
-  "X-Dubber-Client-Secret",
-  "X-Dubber-Auth-Id",
-  "X-Dubber-Auth-Token",
-] as const;
+export const SERVER_VERSION = VERSION;
 
 /**
- * Build validated credentials from raw values. Returns `{ creds }` on
- * success or `{ error }` naming exactly what is wrong. Shared by every
- * transport (env vars, Node HTTP gateway headers).
- */
-export function buildCredentials(
-  clientId: string | undefined,
-  clientSecret: string | undefined,
-  authId: string | undefined,
-  authToken: string | undefined,
-  region?: string
-): { creds?: DubberCredentials; error?: string } {
-  const missing: string[] = [];
-  if (!clientId) missing.push("X-Dubber-Client-Id");
-  if (!clientSecret) missing.push("X-Dubber-Client-Secret");
-  if (!authId) missing.push("X-Dubber-Auth-Id");
-  if (!authToken) missing.push("X-Dubber-Auth-Token");
-  if (missing.length > 0) {
-    return {
-      error:
-        `Missing credentials: ${missing.join(", ")} ` +
-        "(or DUBBER_CLIENT_ID / DUBBER_CLIENT_SECRET / DUBBER_AUTH_ID / DUBBER_AUTH_TOKEN in env mode)",
-    };
-  }
-  return {
-    creds: {
-      clientId: clientId as string,
-      clientSecret: clientSecret as string,
-      authId: authId as string,
-      authToken: authToken as string,
-      region: region || DEFAULT_REGION,
-    },
-  };
-}
-
-/** Resolve per-request gateway credentials from a (lowercased) header accessor. */
-export function resolveGatewayCredentials(
-  getHeader: (lowerName: string) => string | undefined
-): { creds?: DubberCredentials; error?: string } {
-  return buildCredentials(
-    getHeader("x-dubber-client-id"),
-    getHeader("x-dubber-client-secret"),
-    getHeader("x-dubber-auth-id"),
-    getHeader("x-dubber-auth-token"),
-    getHeader("x-dubber-region")
-  );
-}
-
-/** Resolve env-mode credentials from DUBBER_* environment variables. */
-export function resolveEnvCredentials(
-  env: Record<string, string | undefined> = process.env
-): { creds?: DubberCredentials; error?: string } {
-  const result = buildCredentials(
-    env.DUBBER_CLIENT_ID,
-    env.DUBBER_CLIENT_SECRET,
-    env.DUBBER_AUTH_ID,
-    env.DUBBER_AUTH_TOKEN,
-    env.DUBBER_REGION
-  );
-  if (result.creds && env.DUBBER_BASE_URL) result.creds.baseUrl = env.DUBBER_BASE_URL;
-  return result;
-}
-
-/**
- * Bind createMcpServer into the McpServerFactory shape the v2 HTTP serving
- * entry (createMcpHandler) consumes. The factory runs once per HTTP request —
- * the fresh-instance-per-request stateless idiom — for BOTH protocol eras.
+ * The McpServerFactory consumed by both transports. The factory runs once
+ * per HTTP request (stateless) and once per stdio process.
  *
- * In gateway mode the request's headers are read from ctx.requestInfo,
- * keeping credentials bound per request. Missing headers are answered 401 by
- * the HTTP layer BEFORE serving ever starts — the factory itself never
- * throws (a throwing factory would surface as a 500).
+ * Gateway mode: credentials come ONLY from the request scope, which index.ts
+ * fills from this request's X-Dubber-* headers. The process environment is
+ * never read. Missing headers are answered 401 by the HTTP layer before
+ * serving starts; the factory itself never throws.
  */
-export function makeMcpServerFactory(options: { gatewayMode: boolean }): McpServerFactory {
-  return (ctx) => {
-    if (options.gatewayMode) {
-      const { creds } = resolveGatewayCredentials(
-        (name) => ctx.requestInfo?.headers.get(name) ?? undefined
-      );
-      return createMcpServer(creds);
-    }
-    const { creds } = resolveEnvCredentials();
-    return createMcpServer(creds);
+export function makeMcpServerFactory(): McpServerFactory {
+  return () => {
+    const scope = currentRequestScope();
+    const tiers = scope?.tiers ?? configuredTiers();
+    const credentials = isGatewayMode() ? scope?.credentials : resolveEnvCredentials().creds;
+    return createMcpServer(credentials, tiers);
   };
 }
 
-// ── Pure request-handler bodies (exported for tests) ───────────────────────
-
-export function listToolsResult(): { tools: typeof TOOLS } {
-  // By reference, never rebuilt/sorted/filtered — deterministic for every caller.
-  return { tools: TOOLS };
+/** Redacts, then truncates: the order keeps a partial secret from surviving the cut. */
+function redactResult(result: ToolResult, secrets: string[]): ToolResult {
+  return {
+    ...result,
+    content: result.content.map((c) =>
+      c.type === "text" ? { ...c, text: truncate(redactText(c.text, secrets), MAX_RESPONSE_CHARS) } : c
+    ),
+  };
 }
 
 /**
- * Create a fresh MCP server. Called once for stdio, per-request for HTTP.
- * Credentials may be absent (e.g. env mode without vars): `tools/list` still
- * serves the full deterministic surface; `tools/call` answers a clear
- * isError result instead of throwing.
+ * Create a fresh MCP server. Credentials may be absent (e.g. env mode
+ * without vars): `tools/list` still serves the enabled tools; `tools/call`
+ * answers a clear isError result instead of throwing.
  */
-export function createMcpServer(credentials?: DubberCredentials): Server {
-  const server = new Server(
-    { name: SERVER_NAME, version: SERVER_VERSION },
-    { capabilities: { tools: {} } }
-  );
+export function createMcpServer(
+  credentials?: DubberCredentials,
+  tiers: ReadonlySet<ToolTier> = configuredTiers()
+): Server {
+  const server = new Server({ name: SERVER_NAME, version: SERVER_VERSION }, { capabilities: { tools: {} } });
+  const tools = toolsForTiers(tiers);
+  const enabled = new Set(tools.map((t) => t.name));
 
   // Built lazily on the first tools/call.
-  let client: DubberClient | undefined;
+  let client: DubberApi | undefined;
 
-  server.setRequestHandler("tools/list", async () => listToolsResult());
+  server.setRequestHandler("tools/list", async () => ({ tools }));
 
-  server.setRequestHandler("tools/call", async (request, ctx) => {
+  server.setRequestHandler("tools/call", async (request) => {
     const { name, arguments: args } = request.params;
-    // Tool name only — never arguments or results (recordings may carry PII).
+    // Tool name only — never arguments or results (recordings carry PII and signed links).
     logger.debug("Tool call received", { tool: name });
 
+    if (!enabled.has(name)) return errorResult(`Unknown tool: ${name}`);
     if (!credentials) {
       return errorResult(
-        "Missing Dubber credentials. Set DUBBER_CLIENT_ID / DUBBER_CLIENT_SECRET / " +
-          "DUBBER_AUTH_ID / DUBBER_AUTH_TOKEN (env mode) or send the X-Dubber-Client-Id / " +
-          "X-Dubber-Client-Secret / X-Dubber-Auth-Id / X-Dubber-Auth-Token gateway headers."
+        "Missing Dubber credentials. Send the X-Dubber-Client-Id / X-Dubber-Client-Secret / " +
+          "X-Dubber-Auth-Id / X-Dubber-Auth-Token gateway headers, or (env mode) set DUBBER_CLIENT_ID / " +
+          "DUBBER_CLIENT_SECRET / DUBBER_AUTH_ID / DUBBER_AUTH_TOKEN."
       );
     }
-    try {
-      client ??= new DubberClient(credentials);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return errorResult(`Invalid Dubber credentials: ${message}`);
-    }
+    client ??= createDubberApi(credentials);
 
-    return handleToolCall(client, name, (args ?? {}) as Record<string, unknown>, {
-      clientCapabilities: server.getClientCapabilities(),
-      inputResponses: ctx.mcpReq.inputResponses,
-    });
+    const result = await handleToolCall(client, name, (args ?? {}) as Record<string, unknown>);
+    // The credentials and the access token minted for them (a vendor error may echo either).
+    return redactResult(result, secretsInUse(credentials));
   });
 
   return server;
