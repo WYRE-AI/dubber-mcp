@@ -10,7 +10,7 @@
 //       headers rather than falling through to env-configured ones. That
 //       fallthrough would be a cross-tenant leak, so it is asserted here and
 //       not only unit-tested against a hand-mirrored replica of the router.
-//   (d) STDIO leg — the default surface is the 16 read tools, and a
+//   (d) STDIO leg — the default surface is all 39 tools (every tier), and a
 //       traversal id is refused before any network call.
 // Run after `npm run build`:
 //   node scripts/smoke-dual-era.mjs
@@ -211,14 +211,16 @@ async function stdioLeg() {
   }));
   try {
     const { tools } = await client.listTools();
-    check('stdio serves the 16 read tools by default', tools.length === 16, `count=${tools.length}`);
-    check('every default tool is annotated read-only',
-      tools.every((t) => t.annotations?.readOnlyHint === true && t.annotations?.destructiveHint !== true));
+    check('stdio serves all 39 tools by default', tools.length === 39, `count=${tools.length}`);
+    check('the destructive tools carry destructiveHint',
+      ['dubber_recordings_delete', 'dubber_users_delete', 'dubber_notifications_delete', 'dubber_recordings_delete_tags']
+        .every((n) => tools.find((t) => t.name === n)?.annotations?.destructiveHint === true));
     const refused = await client.callTool({ name: 'dubber_recordings_get', arguments: { recordingId: '..' } });
     const text = refused.content?.[0]?.text ?? '';
     check('traversal id refused before any request', refused.isError === true && text.includes('single ID'), text.slice(0, 120));
-    const hidden = await client.callTool({ name: 'dubber_users_delete', arguments: { userId: 'u-1' } });
-    check('no write or admin tool exists (read-only server)', hidden.isError === true, hidden.content?.[0]?.text ?? '');
+    const unconfirmed = await client.callTool({ name: 'dubber_users_delete', arguments: { userId: 'u-1' } });
+    const utext = unconfirmed.content?.[0]?.text ?? '';
+    check('an unconfirmed delete is blocked before any request', unconfirmed.isError === true && utext.includes('Confirmation required'), utext.slice(0, 120));
   } finally {
     await client.close();
   }

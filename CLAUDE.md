@@ -77,6 +77,15 @@ decisions: `docs/DESIGN.md`.
   `mcp-server-release.yml`), so the Dockerfile mounts it instead of taking a
   `GITHUB_TOKEN` build arg; no workflow change was needed.
 
+## Learnings - 2026-11-15 (write tools restored, WYREAI-567)
+
+- **v2.0.0 (read-only) was rolled back in prod to v1.1.0, and the 23 removed tools are restored
+  verbatim from v1.1.0** (definitions and annotations JSON-identical; handlers from 9639785,
+  which adapted v1.1.0 logic to the guarded `DubberApi`). `ALL_TIERS = DEFAULT_TIERS =
+  read,write,admin` and the Dockerfile sets all three, because Conduit sends no tier header
+  and enforces its own tiers. The entry below is superseded; its field-level findings about
+  the write tools still stand and are not fixed here.
+
 ## Learnings - 2026-11-09 (review fixes)
 
 - **The server is read-only, per the fleet template contract.** All 21 write/admin tools are

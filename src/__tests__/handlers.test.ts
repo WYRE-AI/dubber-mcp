@@ -9,11 +9,11 @@ import { handleToolCall } from "../handlers/index.js";
 import type { ToolResult } from "../handlers/results.js";
 import { stubClient } from "./stub-client.js";
 
-function asTool(result: ToolResult): ToolResult {
-  return result;
+function asTool(result: unknown): ToolResult {
+  return result as ToolResult;
 }
 
-function text(result: ToolResult): string {
+function text(result: unknown): string {
   const content = asTool(result).content[0];
   return content.type === "text" ? content.text : "";
 }

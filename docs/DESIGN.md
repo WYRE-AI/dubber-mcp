@@ -4,8 +4,12 @@
 
 ### 1.1 What ships
 
-A flat, read-only, 16-tool MCP surface over the Dubber API Store's call-recording
-platform. Every tool is `readOnlyHint: true` and sends only GETs; `read` is the only tier.
+A flat, 39-tool MCP surface over the Dubber API Store's call-recording platform: the 37
+v1.1.0 tools, restored unchanged (definitions, annotations and tiers) in v2.0.x after the
+read-only v2.0.0, plus `dubber_recordings_get_link` and
+`dubber_groups_list_unidentified_dub_points`, both read. Tiers come from annotations
+(`destructiveHint` → admin, `readOnlyHint` → read, else write); `DUBBER_TOOL_TIERS` defaults to
+all three. The read tools:
 
 - **Core** (1): `dubber_test_connection`.
 - **Groups** (2): `dubber_groups_get`, `dubber_groups_list_unidentified_dub_points`
@@ -22,17 +26,13 @@ platform. Every tool is `readOnlyHint: true` and sends only GETs; `read` is the 
 
 ### 1.2 What does NOT ship, and why
 
-- **Every write and admin tool** (21 in v1.0.x: create/update/delete for accounts, users,
-  recordings, tags, metadata, notifications and dub points; child groups; the multipart
-  upload flow; token revocation). This server follows the fleet's read-only template
-  contract: with no write code compiled in, no setting can turn writes on and a
-  prompt-injected caller cannot, for example, subscribe a webhook to an account's recording
-  events. A review against Dubber's docs also found most of them sent the wrong fields
-  (`notifications_create`, `accounts_create`, `users_create`), hit an undocumented endpoint
-  (`groups_create_unidentified_recording`), or could not complete (the multipart upload).
-- **`dubber_notifications_list_unclaimed`.** `GET /notifications/:id/unclaimed` answers
-  `unclaimed_messages_released: N`, i.e. it re-queues held messages: a side effect, so not a
-  read.
+- **Restored write/admin tools** (20) and `dubber_groups_list_unidentified_recordings`,
+  `dubber_recordings_get_upload_target`, `dubber_notifications_list_unclaimed` ship exactly as
+  in v1.1.0 (v2.0.0 had removed them). A review against Dubber's docs found several write
+  tools send fields Dubber does not document (`notifications_create`, `accounts_create`,
+  `users_create`), `groups_create_unidentified_recording` hits an undocumented endpoint, and
+  the multipart upload sends `{}` to `complete_upload`; they are restored unchanged on purpose
+  and any fix lands as its own change.
 - **`query` on `dubber_recordings_list`.** Get_Account_Recordings does not document it;
   Dubber ignores unknown params, so a "filtered" call could quietly return everything.
 - **A recording-download-as-binary tool.** `GuardedHttp` refuses binary responses and ignores
@@ -66,8 +66,8 @@ Dubber: fixed origin plus an exact-path check on every built URL,
 `redirect: "manual"` with every 3xx refused (including the token mint, whose
 body carries the client secret), 4 MiB bounded reads, vendor request ids on
 errors, no automatic retries except one re-mint after a 401 on a cached token (at most once per
-10 minutes per credential set), GET-only requests
-with no body (node-dubber's write methods are refused before any request), and a
+10 minutes per credential set), an allowlisted method
+(GET, POST, PUT, PATCH, DELETE; a GET never carries a body, and a body is sent as JSON), and a
 per-credential token cache (Dubber caps tokens at ~500 per 24 h). A token is refreshed a
 tenth of its lifetime before expiry (no less than 5 s and no more than 30 min before; no
 `expires_in` = 24 h), so Dubber's 240 s sample
@@ -147,8 +147,8 @@ signature. Treat this as a documented floor, not an asserted ceiling.
 `@wyre-ai` scope, `ghcr.io/wyre-ai`, WYRE-AI/reusable-workflows release
 caller, MCP SDK v2 with dual-era (`legacy: 'stateless'`) serving from day
 one (no v1→v2 migration debt), the standard s2s-verify (`X-Gateway-S2S`)
-wrapper, and the read-only template contract (`read` the only tier; the §2.7b
-destructive-warning lint still runs and finds no destructive tools).
+wrapper, and the §2.7b destructive-tool convention (warning lint plus
+confirmation by elicitation or `confirm_destructive_action`).
 
 No `deploy:` job — Dubber is conduit-only (see release.yml's header
 comment), matching kpn-mcp, connectwise-cpq-mcp, scalepad-mcp and clio-mcp.

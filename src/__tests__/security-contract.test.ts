@@ -21,7 +21,7 @@ import { handleToolCall } from "../handlers/index.js";
 import type { ToolResult } from "../handlers/results.js";
 import { makeMcpServerFactory } from "../mcp-server.js";
 import { REDACTED, redactLogText, redactText, redactValue } from "../redact.js";
-import { toolsForTiers } from "../tools/index.js";
+import { TOOLS as TOOLS_ALL, toolTier, toolsForTiers } from "../tools/index.js";
 
 const CREDS: DubberCredentials = {
   clientId: "test-client-id-0001",
@@ -206,23 +206,22 @@ describe("fixed origin, exact path, path parameters", () => {
   });
 });
 
-describe("the transport is GET-only", () => {
-  it("refuses node-dubber's write methods before any request (no token mint either)", async () => {
-    const api = createDubberApi(CREDS);
-    await expect(api.recordings.delete("x")).rejects.toThrow("Only GET requests");
-    await expect(api.users.delete("u-1")).rejects.toThrow("Only GET requests");
+describe("the transport sends JSON only, with an allowlisted method", () => {
+  it.each([
+    [{ method: "TRACE" }, "Refusing HTTP method TRACE"],
+    [{ method: "GET", body: { a: 1 } }, "Refusing a GET request with a body"],
+  ])("refuses a raw request with %j before any request", async (options, message) => {
+    await expect(createDubberApi(CREDS).request("/recordings/r-1", options as never)).rejects.toThrow(message);
     expect(sent).toEqual([]);
   });
 
-  it.each([
-    [{ method: "DELETE" }],
-    [{ method: "POST" }],
-    [{ body: { a: 1 } }],
-  ])("refuses a raw request with %j", async (options) => {
-    await expect(createDubberApi(CREDS).request("/recordings/r-1", options as never)).rejects.toThrow(
-      "Only GET requests"
-    );
-    expect(sent).toEqual([]);
+  it("a write sends its JSON body with Content-Type: application/json", async () => {
+    respond = () => json({ id: "u-9" });
+    await createDubberApi(CREDS).users.update("u-1", { role: "Listener" });
+    const call = sent[1]!;
+    expect(call.method).toBe("PUT");
+    expect(call.headers["content-type"]).toBe("application/json");
+    expect(JSON.parse(call.body)).toEqual({ role: "Listener" });
   });
 });
 
@@ -385,6 +384,9 @@ describe("every tool sends exactly the documented request (real transport, fetch
     dubber_notifications_get: [{ notificationId: "n-1" }, ["GET /au/v1/notifications/n-1"]],
     dubber_dub_points_list: [{ accountId: "a-1" }, ["GET /au/v1/accounts/a-1/dub_points?count=100"]],
     dubber_dub_points_get: [{ dubPointId: "d-1" }, ["GET /au/v1/dub_points/d-1"]],
+    dubber_groups_list_unidentified_recordings: [{ groupId: "g-1" }, ["GET /au/v1/groups/g-1/unidentified_recordings"]],
+    dubber_notifications_list_unclaimed: [{ notificationId: "n-1" }, ["GET /au/v1/notifications/n-1/unclaimed"]],
+    dubber_recordings_get_upload_target: [{ recordingId: "r-1" }, ["GET /au/v1/recordings/r-1/upload"]],
     dubber_dub_points_find: [
       { query: { external_type: "broadworks", external_identifier: "u@x" } },
       ["GET /au/v1/dub_points/find?external_type=broadworks&external_identifier=u%40x"],
@@ -403,6 +405,97 @@ describe("every tool sends exactly the documented request (real transport, fetch
     expect(apiCalls.map((c) => `${c.method} ${c.url.pathname}${c.url.search}`)).toEqual(expected);
     for (const call of apiCalls) expect(call.body, name).toBe("");
   });
+});
+
+describe("write and admin tools send the v1.1.0 request (real transport, fetch stubbed)", () => {
+  const CONFIRM = { confirm_destructive_action: true };
+  /** [args, method, path, JSON body or undefined] */
+  const EXPECTED: Record<string, [Record<string, unknown>, string, string, unknown]> = {
+    dubber_groups_create_child: [{ groupId: "g-1", name: "Child" }, "POST", "/au/v1/groups/g-1/groups", { name: "Child" }],
+    dubber_groups_create_unidentified_recording: [
+      { groupId: "g-1", data: { a: 1 } },
+      "POST",
+      "/au/v1/groups/g-1/unidentified_recordings",
+      { a: 1 },
+    ],
+    dubber_accounts_create: [{ name: "Acme" }, "POST", "/au/v1/accounts", { name: "Acme" }],
+    dubber_accounts_update: [{ accountId: "a-1", data: { name: "B" } }, "PUT", "/au/v1/accounts/a-1", { name: "B" }],
+    dubber_recordings_create: [{ accountId: "a-1", data: { a: 1 } }, "POST", "/au/v1/accounts/a-1/recordings", { a: 1 }],
+    dubber_recordings_delete: [{ recordingId: "r-1", ...CONFIRM }, "DELETE", "/au/v1/recordings/r-1", undefined],
+    dubber_recordings_update_metadata: [
+      { recordingId: "r-1", metadata: { k: "v" } },
+      "PUT",
+      "/au/v1/recordings/r-1/metadata",
+      { k: "v" },
+    ],
+    dubber_users_create: [{ accountId: "a-1", email: "u@example.com" }, "POST", "/au/v1/accounts/a-1/users", { email: "u@example.com" }],
+    dubber_users_update: [{ userId: "u-1", data: { role: "Listener" } }, "PUT", "/au/v1/users/u-1", { role: "Listener" }],
+    dubber_users_delete: [{ userId: "u-1", ...CONFIRM }, "DELETE", "/au/v1/users/u-1", undefined],
+    dubber_notifications_update: [{ notificationId: "n-1", data: { a: 1 } }, "PUT", "/au/v1/notifications/n-1", { a: 1 }],
+    dubber_notifications_activate: [{ notificationId: "n-1" }, "POST", "/au/v1/notifications/n-1/activate", undefined],
+    dubber_notifications_delete: [{ notificationId: "n-1", ...CONFIRM }, "DELETE", "/au/v1/notifications/n-1", undefined],
+    dubber_dub_points_create: [{ accountId: "a-1", data: { a: 1 } }, "POST", "/au/v1/accounts/a-1/dub_points", { a: 1 }],
+    dubber_recordings_complete_upload: [{ recordingId: "r-1" }, "PUT", "/au/v1/recordings/r-1/complete_upload", {}],
+    dubber_recordings_add_tags: [{ recordingId: "r-1", tags: ["t1"] }, "POST", "/au/v1/recordings/r-1/tags", { tags: ["t1"] }],
+    dubber_recordings_delete_tags: [
+      { recordingId: "r-1", tags: ["t1"], ...CONFIRM },
+      "DELETE",
+      "/au/v1/recordings/r-1/tags",
+      { tags: ["t1"] },
+    ],
+    dubber_recordings_initiate_multipart_upload: [
+      { accountId: "a-1", data: { a: 1 } },
+      "POST",
+      "/au/v1/accounts/a-1/recordings",
+      { a: 1, multipart: true },
+    ],
+    dubber_notifications_create: [
+      { accountId: "a-1", url: "https://hooks.example/x", event: "recording.created" },
+      "POST",
+      "/au/v1/accounts/a-1/notifications",
+      { url: "https://hooks.example/x", event: "recording.created" },
+    ],
+  };
+
+  it("covers every write and admin tool except dubber_oauth_revoke_token (tested below)", () => {
+    const nonRead = TOOLS_ALL.filter((t) => toolTier(t) !== "read").map((t) => t.name);
+    expect([...Object.keys(EXPECTED), "dubber_oauth_revoke_token"].sort()).toEqual(nonRead.sort());
+  });
+
+  it("dubber_oauth_revoke_token posts the token to /revoke and drops it from the cache", async () => {
+    respond = () => new Response(null, { status: 200 });
+    const result = await handleToolCall(createDubberApi(CREDS), "dubber_oauth_revoke_token", CONFIRM);
+    expect((result as ToolResult).isError, text(result)).toBeFalsy();
+    const revoke = sent.find((c) => c.url.pathname === "/au/v1/revoke")!;
+    expect(revoke.method).toBe("POST");
+    expect(new URLSearchParams(revoke.body).get("token")).toBe(ACCESS_TOKEN);
+    expect(revoke.redirect).toBe("manual");
+  });
+
+  it.each(Object.entries(EXPECTED))("%s", async (name, [args, method, path, body]) => {
+    respond = () => json({ id: "x-1" });
+    const result = await handleToolCall(createDubberApi(CREDS), name, args);
+    expect((result as ToolResult).isError, text(result)).toBeFalsy();
+    const apiCalls = sent.filter((c) => !c.url.pathname.endsWith("/token"));
+    expect(apiCalls.map((c) => `${c.method} ${c.url.pathname}`)).toEqual([`${method} ${path}`]);
+    if (body === undefined) expect(apiCalls[0]!.body).toBe("");
+    else expect(JSON.parse(apiCalls[0]!.body)).toMatchObject(body as object);
+  });
+
+  it.each(["dubber_recordings_delete", "dubber_users_delete", "dubber_notifications_delete", "dubber_oauth_revoke_token"])(
+    "%s is blocked without confirmation from a client that cannot be prompted, before any request",
+    async (name) => {
+      const args: Record<string, unknown> =
+        name === "dubber_recordings_delete" ? { recordingId: "r-1" }
+        : name === "dubber_users_delete" ? { userId: "u-1" }
+        : name === "dubber_notifications_delete" ? { notificationId: "n-1" }
+        : {};
+      const result = await handleToolCall(createDubberApi(CREDS), name, args);
+      expect((result as ToolResult).isError).toBe(true);
+      expect(text(result)).toContain("Confirmation required");
+      expect(sent).toEqual([]);
+    }
+  );
 });
 
 describe("list tools page explicitly and say when more exist", () => {

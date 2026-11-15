@@ -1,8 +1,8 @@
 # dubber-mcp
 
-Read-only MCP server for [Dubber](https://developer.dubber.net/): call recordings and their
+MCP server for [Dubber](https://developer.dubber.net/): call recordings and their
 audio links, groups, accounts, users, REST-hook (webhook) subscriptions, and Dub.Point
-telecom-system (e.g. BroadWorks) recording sources. No tool changes anything in Dubber.
+telecom-system (e.g. BroadWorks) recording sources.
 
 Built on the MCP **2026-07-28** spec via the split v2 SDK
 (`@modelcontextprotocol/server` `^2.4.0`, `@modelcontextprotocol/node` `^2.1.2`, and
@@ -14,15 +14,35 @@ Ships as a GHCR container only (no MCPB bundle). Endpoint paths come from
 [`@wyre-ai/node-dubber`](https://github.com/WYRE-AI/node-dubber); every request goes
 through this server's own guarded transport (see [Security](#security)).
 
-## Read-only
+## Tool tiers
 
-Every tool is annotated `readOnlyHint: true` and sends only `GET` requests (plus the token
-mint); the tests assert each tool's exact request. `read` is the only tool tier, so
-`DUBBER_TOOL_TIERS` accepts only `read` and anything else refuses to start. An
+Each tool's tier comes from its annotations: `destructiveHint` → `admin`, `readOnlyHint` →
+`read`, otherwise `write`. `DUBBER_TOOL_TIERS` (comma-separated `read`, `write`, `admin`)
+defaults to all three, the v1.1.0 surface; an unknown entry refuses to start. An
 `X-Conduit-Tool-Tiers` request header can only narrow (an empty header means no tools); Conduit
-does not send it yet.
+does not send it yet and enforces its own per-caller tiers in front of this server. Destructive
+tools ask for confirmation by elicitation, or, from a client that cannot be prompted, need
+`confirm_destructive_action: true`; otherwise nothing is changed. The tests assert each tool's
+exact request.
 
-## Tools (16, flat)
+## Tools (39, flat)
+
+The 37 v1.1.0 tools plus `dubber_recordings_get_link` and
+`dubber_groups_list_unidentified_dub_points` (both read).
+
+- **Write and admin tools (restored from v1.1.0, unchanged)**: `dubber_groups_create_child`,
+  `dubber_groups_create_unidentified_recording`, `dubber_accounts_create`,
+  `dubber_accounts_update`, `dubber_recordings_create`, `dubber_recordings_delete`,
+  `dubber_recordings_update_metadata`, `dubber_recordings_add_tags`,
+  `dubber_recordings_delete_tags`, `dubber_recordings_initiate_multipart_upload`,
+  `dubber_recordings_complete_upload`, `dubber_users_create`, `dubber_users_update`,
+  `dubber_users_delete`, `dubber_notifications_create`, `dubber_notifications_update`,
+  `dubber_notifications_activate`, `dubber_notifications_delete`, `dubber_dub_points_create`,
+  `dubber_oauth_revoke_token`.
+- **Other restored v1.1.0 tools**: `dubber_groups_list_unidentified_recordings`,
+  `dubber_recordings_get_upload_target`, `dubber_notifications_list_unclaimed`.
+
+Read tools:
 
 - **Core**: `dubber_test_connection`.
 - **Groups**: `dubber_groups_get`, `dubber_groups_list_unidentified_dub_points` (needs a
@@ -81,7 +101,7 @@ transport does not use `CONDUIT_S2S_SECRET`.
 | `MCP_HTTP_HOST` | No | Bind address when a real `CONDUIT_S2S_SECRET` is set. Unset keeps `0.0.0.0`, the historical container bind. The image and Compose set `0.0.0.0` inside the container. |
 | `MCP_HTTP_PORT` | No | HTTP port. Defaults to `8080`. |
 | `AUTH_MODE` | No | `gateway` (Docker image and Compose) or `env`. Gateway mode requires the four `X-Dubber-*` credential headers on each `/mcp` request and never falls back to `DUBBER_*`. `env` uses those variables only after S2S auth succeeds, and HTTP refuses to start in `env` mode without them. Unset means `env` (stdio and single-tenant HTTP outside the image). Any other value refuses to start. |
-| `DUBBER_TOOL_TIERS` | No | `read` (the default and only tier). See [Read-only](#read-only). Any other entry refuses to start. |
+| `DUBBER_TOOL_TIERS` | No | Comma-separated `read`, `write`, `admin`; default all three. See [Tool tiers](#tool-tiers). An unknown entry refuses to start. |
 
 ### HTTP authentication
 

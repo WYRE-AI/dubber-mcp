@@ -1,26 +1,53 @@
 /** Tool-surface contract tests: count, names, order, schemas, annotations, the read-only contract. */
 import { describe, expect, it } from "vitest";
-import { ALL_TIERS, DEFAULT_TIERS, parseToolTiers } from "../config.js";
-import { TOOLS, TOOL_NAMES, toolsForTiers } from "../tools/index.js";
+import { ALL_TIERS, DEFAULT_TIERS, parseToolTiers, type ToolTier } from "../config.js";
+import { CONFIRM_ARG } from "../elicitation.js";
+import { TOOLS, TOOL_NAMES, toolTier, toolsForTiers } from "../tools/index.js";
 
-/** docs/DESIGN.md §1.1 order — the single source of truth for the surface. */
+/**
+ * The v1.1.0 surface (37 tools, same order) plus the two read tools added in v2:
+ * dubber_groups_list_unidentified_dub_points and dubber_recordings_get_link.
+ */
 const EXPECTED_ORDER = [
   "dubber_test_connection",
   "dubber_groups_get",
   "dubber_groups_list_unidentified_dub_points",
+  "dubber_groups_create_child",
+  "dubber_groups_list_unidentified_recordings",
+  "dubber_groups_create_unidentified_recording",
+  "dubber_accounts_create",
   "dubber_accounts_get",
+  "dubber_accounts_update",
   "dubber_recordings_list",
+  "dubber_recordings_create",
   "dubber_recordings_get",
   "dubber_recordings_get_link",
   "dubber_recordings_get_waveform",
+  "dubber_recordings_delete",
+  "dubber_recordings_update_metadata",
+  "dubber_recordings_add_tags",
+  "dubber_recordings_delete_tags",
+  "dubber_recordings_initiate_multipart_upload",
+  "dubber_recordings_get_upload_target",
+  "dubber_recordings_complete_upload",
   "dubber_users_list",
+  "dubber_users_create",
   "dubber_users_get",
+  "dubber_users_update",
+  "dubber_users_delete",
   "dubber_profile_get",
   "dubber_notifications_list",
+  "dubber_notifications_create",
   "dubber_notifications_get",
+  "dubber_notifications_update",
+  "dubber_notifications_activate",
+  "dubber_notifications_list_unclaimed",
+  "dubber_notifications_delete",
   "dubber_dub_points_list",
+  "dubber_dub_points_create",
   "dubber_dub_points_get",
   "dubber_dub_points_find",
+  "dubber_oauth_revoke_token",
 ];
 
 function tool(name: string) {
@@ -37,7 +64,7 @@ function schemaOf(name: string) {
 }
 
 describe("tool surface", () => {
-  it("has exactly 16 tools in the DESIGN.md order", () => {
+  it("has the 39 tools: v1.1.0's 37 in order plus the two new read tools", () => {
     expect(TOOL_NAMES).toEqual(EXPECTED_ORDER);
   });
 
@@ -53,23 +80,61 @@ describe("tool surface", () => {
   });
 });
 
-describe("read-only contract", () => {
-  it("every tool is annotated read-only and open-world, never destructive, with no warning", () => {
-    for (const t of TOOLS) {
+/**
+ * Tiers derived from annotations (Conduit's rule). Write/admin tools keep their
+ * v1.1.0 annotations exactly; every tool not listed here is read.
+ */
+const NON_READ_TIERS: Record<string, ToolTier> = {
+  dubber_groups_create_child: "write",
+  dubber_groups_create_unidentified_recording: "write",
+  dubber_accounts_create: "write",
+  dubber_accounts_update: "write",
+  dubber_recordings_create: "write",
+  dubber_recordings_delete: "admin",
+  dubber_recordings_update_metadata: "write",
+  dubber_recordings_add_tags: "write",
+  dubber_recordings_delete_tags: "admin",
+  dubber_recordings_initiate_multipart_upload: "write",
+  dubber_recordings_complete_upload: "write",
+  dubber_users_create: "write",
+  dubber_users_update: "write",
+  dubber_users_delete: "admin",
+  dubber_notifications_create: "write",
+  dubber_notifications_update: "write",
+  dubber_notifications_activate: "write",
+  dubber_notifications_delete: "admin",
+  dubber_dub_points_create: "write",
+  dubber_oauth_revoke_token: "admin",
+};
+
+describe("tool tiers", () => {
+  it("every tool's tier matches v1.1.0 (the two new tools are read)", () => {
+    for (const t of TOOLS) expect(toolTier(t), t.name).toBe(NON_READ_TIERS[t.name] ?? "read");
+  });
+
+  it("read tools are annotated read-only and open-world, with no warning", () => {
+    for (const t of TOOLS.filter((x) => toolTier(x) === "read")) {
       expect(t.annotations, t.name).toMatchObject({ readOnlyHint: true, openWorldHint: true });
-      expect(t.annotations?.destructiveHint, t.name).not.toBe(true);
       expect(t.description, t.name).not.toContain("⚠");
     }
   });
 
-  it("read is the only tier: write/admin fail at startup instead of enabling anything", () => {
-    expect(ALL_TIERS).toEqual(["read"]);
-    expect(DEFAULT_TIERS).toEqual(["read"]);
-    for (const raw of ["write", "admin", "read,write", "read,write,admin"]) {
-      expect(() => parseToolTiers(raw), raw).toThrow("Invalid DUBBER_TOOL_TIERS entry");
+  it("destructive tools carry the warning prefix and the confirm argument", () => {
+    for (const t of TOOLS.filter((x) => x.annotations?.destructiveHint === true)) {
+      expect(t.description, t.name).toMatch(/^⚠ (DESTRUCTIVE|HIGH-IMPACT)/);
+      expect(Object.keys((t.inputSchema as { properties?: object }).properties ?? {}), t.name).toContain(CONFIRM_ARG);
     }
-    expect(toolsForTiers(parseToolTiers("read"))).toEqual(TOOLS);
+  });
+
+  it("every tier is enabled by default; DUBBER_TOOL_TIERS narrows", () => {
+    expect(ALL_TIERS).toEqual(["read", "write", "admin"]);
+    expect(DEFAULT_TIERS).toEqual(["read", "write", "admin"]);
+    expect(toolsForTiers(parseToolTiers(undefined))).toEqual(TOOLS);
+    expect(toolsForTiers(parseToolTiers("read")).map((t) => t.name)).toEqual(
+      TOOL_NAMES.filter((n) => !(n in NON_READ_TIERS))
+    );
     expect(toolsForTiers(new Set())).toEqual([]);
+    expect(() => parseToolTiers("superuser")).toThrow("Invalid DUBBER_TOOL_TIERS entry");
   });
 });
 

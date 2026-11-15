@@ -7,8 +7,10 @@
  * tool in TOOLS without a handler, throws at module load so a wiring mistake
  * fails every test instead of surfacing as "Unknown tool" in production.
  */
+import type { InputRequiredResult } from "@modelcontextprotocol/server";
 import { AuthenticationError, DubberError, ForbiddenError, RateLimitError } from "@wyre-ai/node-dubber";
 import { rateLimitOf, type DubberApi, type DubberApiError } from "../dubber-api.js";
+import { NO_ELICITATION, type ElicitationContext } from "../elicitation.js";
 import { logger } from "../utils/logger.js";
 import { TOOLS } from "../tools/index.js";
 import { ACCOUNTS_HANDLERS } from "./accounts.js";
@@ -16,6 +18,7 @@ import { CORE_HANDLERS } from "./core.js";
 import { DUB_POINTS_HANDLERS } from "./dub-points.js";
 import { GROUPS_HANDLERS } from "./groups.js";
 import { NOTIFICATIONS_HANDLERS } from "./notifications.js";
+import { OAUTH_HANDLERS } from "./oauth.js";
 import { PROFILE_HANDLERS } from "./profile.js";
 import { RECORDINGS_HANDLERS } from "./recordings.js";
 import { errorResult, ToolInputError, type ToolHandler, type ToolResult } from "./results.js";
@@ -41,6 +44,7 @@ const HANDLERS = mergeHandlers([
   PROFILE_HANDLERS,
   NOTIFICATIONS_HANDLERS,
   DUB_POINTS_HANDLERS,
+  OAUTH_HANDLERS,
 ]);
 
 for (const tool of TOOLS) {
@@ -80,13 +84,14 @@ export function describeDubberError(error: DubberApiError): string {
 export async function handleToolCall(
   client: DubberApi,
   name: string,
-  args: Record<string, unknown>
-): Promise<ToolResult> {
+  args: Record<string, unknown>,
+  elicitation: ElicitationContext = NO_ELICITATION
+): Promise<ToolResult | InputRequiredResult> {
   if (!Object.hasOwn(HANDLERS, name)) {
     return errorResult(`Unknown tool: ${name}`);
   }
   try {
-    return await HANDLERS[name](client, args);
+    return await HANDLERS[name](client, args, elicitation);
   } catch (error) {
     // Tool name, status and request id only — never arguments or bodies.
     logger.warn("Tool call failed", {

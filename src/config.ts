@@ -4,16 +4,19 @@
  */
 
 /**
- * Every tool in this server is read-only, so `read` is the only tier: there
- * is no write or admin code to enable. DUBBER_TOOL_TIERS=write (or admin)
- * refuses to start. The tier machinery matches the rest of the fleet so
- * Conduit's tier contract behaves the same here.
+ * Tool tiers, matching Conduit's permission tiers. A tool's tier is derived
+ * from its annotations the same way Conduit derives it (tools/index.ts):
+ * destructiveHint -> admin, readOnlyHint -> read, anything else -> write.
  */
-export type ToolTier = "read";
+export type ToolTier = "read" | "write" | "admin";
 
-export const ALL_TIERS: readonly ToolTier[] = ["read"];
+export const ALL_TIERS: readonly ToolTier[] = ["read", "write", "admin"];
 
-export const DEFAULT_TIERS: readonly ToolTier[] = ["read"];
+/**
+ * Every tier by default, so the served surface matches v1.1.0 (all tools).
+ * DUBBER_TOOL_TIERS (e.g. "read") or the X-Conduit-Tool-Tiers header narrows it.
+ */
+export const DEFAULT_TIERS: readonly ToolTier[] = ALL_TIERS;
 
 export const TOOL_TIERS_ENV = "DUBBER_TOOL_TIERS";
 
@@ -37,7 +40,7 @@ export function configuredTiers(): ReadonlySet<ToolTier> {
 
 /**
  * Optional header that narrows (never widens) the enabled tiers for one
- * request. Accepted for fleet parity; Conduit does not send it yet.
+ * request. Conduit does not send it yet; its own tier enforcement applies.
  */
 export const TOOL_TIERS_HEADER = "x-conduit-tool-tiers";
 

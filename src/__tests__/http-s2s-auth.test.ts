@@ -679,10 +679,10 @@ describe("HTTP startup: fail closed on weak or inconsistent configuration", () =
     expect(await refused()).toContain("AUTH_MODE=env requires DUBBER_* credentials");
   });
 
-  it.each(["write", "read,write,admin"])("refuses DUBBER_TOOL_TIERS=%s: this server is read-only", async (tiers) => {
+  it("refuses an unknown DUBBER_TOOL_TIERS entry", async () => {
     process.env.CONDUIT_S2S_SECRET = S2S_SECRET;
     process.env.AUTH_MODE = "gateway";
-    process.env.DUBBER_TOOL_TIERS = tiers;
+    process.env.DUBBER_TOOL_TIERS = "read,superuser";
     expect(await refused()).toContain("Invalid DUBBER_TOOL_TIERS entry");
   });
 
@@ -712,18 +712,27 @@ describe("HTTP tool tiers (X-Conduit-Tool-Tiers)", () => {
     return (parseJson(response) as { result: { tools: { name: string }[] } }).result.tools;
   }
 
-  it("defaults to the 16 read tools, all annotated read-only", async () => {
+  it("defaults to every tier: all 39 tools", async () => {
+    const server = await listen();
+    expect(await listedTools(server.port)).toHaveLength(39);
+  });
+
+  it("DUBBER_TOOL_TIERS=read serves only the 19 read tools", async () => {
+    process.env.DUBBER_TOOL_TIERS = "read";
     const server = await listen();
     const tools = (await listedTools(server.port)) as { name: string; annotations?: { readOnlyHint?: boolean } }[];
-    expect(tools).toHaveLength(16);
+    expect(tools).toHaveLength(19);
     for (const t of tools) expect(t.annotations?.readOnlyHint, t.name).toBe(true);
   });
 
   it("an empty header narrows to zero tools; the header can never widen", async () => {
     const server = await listen();
     expect(await listedTools(server.port, { "x-conduit-tool-tiers": "" })).toHaveLength(0);
-    expect(await listedTools(server.port, { "x-conduit-tool-tiers": "write,admin" })).toHaveLength(0);
-    expect(await listedTools(server.port, { "x-conduit-tool-tiers": "read,write,admin" })).toHaveLength(16);
+    expect(await listedTools(server.port, { "x-conduit-tool-tiers": "read" })).toHaveLength(19);
+    expect(await listedTools(server.port, { "x-conduit-tool-tiers": "read,write,admin" })).toHaveLength(39);
+    process.env.DUBBER_TOOL_TIERS = "read";
+    const narrowed = await listen();
+    expect(await listedTools(narrowed.port, { "x-conduit-tool-tiers": "read,write,admin" })).toHaveLength(19);
   });
 
   it("a tool outside the request's tiers is answered as unknown, before any Dubber call", async () => {

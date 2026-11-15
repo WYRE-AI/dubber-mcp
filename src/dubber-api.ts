@@ -17,9 +17,9 @@
  *   401 on a token minted for this call, or inside the window, is final
  *   unless a concurrent call already replaced the token, in which case the
  *   call retries with the new token at no cost);
- * - GET only, with no body: the read-only guarantee lives here, not only in
- *   the handlers (node-dubber's resources also expose write methods). The
- *   token mint is the one POST and calls send() directly.
+ * - an allowlisted method (GET, POST, PUT, PATCH, DELETE); a GET never
+ *   carries a body, and a body is sent as JSON. The token mint and revoke
+ *   are form POSTs and call send() directly.
  *
  * Tokens are cached per credential set and refreshed a tenth of their lifetime
  * before expiry (no less than 5 seconds and no more than 30 minutes before).
@@ -275,27 +275,37 @@ export function secretsInUse(creds: DubberCredentials | undefined): string[] {
 
 /**
  * The subset of node-dubber's HttpClient that its resource classes call.
- * Only JSON GET requests without a body are allowed, so node-dubber's write
- * methods (recordings.delete, users.delete, ...) fail here before any
- * request. RequestOptions.headers is ignored and responseType "binary" is
- * refused, so a future audio download tool (recordings.download sends
- * Accept: audio/*) needs both added here.
+ * JSON requests only: GET, plus POST/PUT/PATCH/DELETE with an optional JSON
+ * body for the write and admin tools. RequestOptions.headers is ignored and
+ * responseType "binary" is refused, so a future audio download tool
+ * (recordings.download sends Accept: audio/*) needs both added here.
  */
+const ALLOWED_METHODS: ReadonlySet<string> = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+
 class GuardedHttp {
   constructor(private readonly creds: DubberCredentials) {}
 
   async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
     const { method = "GET", params, body, responseType = "json" } = options;
-    if (method !== "GET" || body !== undefined) {
-      throw new DubberError(`Only GET requests without a body reach the Dubber API; refused ${method} ${path}.`, 0, undefined);
+    if (!ALLOWED_METHODS.has(method)) {
+      throw new DubberError(`Refusing HTTP method ${method} for ${path}.`, 0, undefined);
+    }
+    if (method === "GET" && body !== undefined) {
+      throw new DubberError(`Refusing a GET request with a body for ${path}.`, 0, undefined);
     }
     if (responseType !== "json") throw new DubberError("Binary Dubber responses are not supported.", 0, undefined);
     const url = buildUrl(this.creds, path, params);
     for (let attempt = 0; ; attempt++) {
       const { token, cached } = await getToken(this.creds);
+      // A 401 means Dubber did not act on the request, so retrying a write after a re-mint is safe.
       const res = await send(url, {
-        method: "GET",
-        headers: { Accept: "application/json", Authorization: `Bearer ${token.accessToken}` },
+        method,
+        headers: {
+          Accept: "application/json",
+          ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+          Authorization: `Bearer ${token.accessToken}`,
+        },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       });
       if (res.status === 401 && cached && attempt === 0) {
         // A cached token may have been revoked or expired early. If a concurrent call already
@@ -344,6 +354,8 @@ export interface DubberApi {
   dubPoints: DubPointsResource;
   request<T>(path: string, options?: RequestOptions): Promise<T>;
   testConnection(): Promise<ConnectionTestResult>;
+  /** Revoke this credential set's current access token (dubber_oauth_revoke_token). */
+  revokeToken(): Promise<void>;
 }
 
 export function createDubberApi(creds: DubberCredentials): DubberApi {
@@ -378,6 +390,23 @@ export function createDubberApi(creds: DubberCredentials): DubberApi {
         }
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
+    },
+
+    /** Dubber's `POST /revoke` (RFC 7009 shape; see node-dubber's revokeToken). */
+    async revokeToken() {
+      const { token } = await getToken(creds);
+      const res = await send(buildUrl(creds, "/revoke"), {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          token: token.accessToken,
+          client_id: creds.clientId,
+          client_secret: creds.clientSecret,
+        }).toString(),
+      });
+      if (!res.ok) throw await vendorError(res);
+      await res.body?.cancel().catch(() => undefined);
+      tokenCache.delete(cacheKey(creds));
     },
   };
 }

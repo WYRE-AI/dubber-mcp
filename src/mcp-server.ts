@@ -83,7 +83,7 @@ export function createMcpServer(
 
   server.setRequestHandler("tools/list", async () => ({ tools }));
 
-  server.setRequestHandler("tools/call", async (request) => {
+  server.setRequestHandler("tools/call", async (request, ctx) => {
     const { name, arguments: args } = request.params;
     // Tool name only — never arguments or results (recordings carry PII and signed links).
     logger.debug("Tool call received", { tool: name });
@@ -98,9 +98,13 @@ export function createMcpServer(
     }
     client ??= createDubberApi(credentials);
 
-    const result = await handleToolCall(client, name, (args ?? {}) as Record<string, unknown>);
+    const result = await handleToolCall(client, name, (args ?? {}) as Record<string, unknown>, {
+      clientCapabilities: server.getClientCapabilities(),
+      inputResponses: ctx.mcpReq.inputResponses,
+    });
     // The credentials and the access token minted for them (a vendor error may echo either).
-    return redactResult(result, secretsInUse(credentials));
+    // An input_required result (destructive-action confirmation) carries no vendor data.
+    return "content" in result ? redactResult(result as ToolResult, secretsInUse(credentials)) : result;
   });
 
   return server;
