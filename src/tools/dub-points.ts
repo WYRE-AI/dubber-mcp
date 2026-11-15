@@ -8,19 +8,41 @@ export const DUB_POINTS_TOOLS: Tool[] = [
   {
     name: "dubber_dub_points_list",
     description:
-      "List one page of dub points on a Dubber account, optionally only one user's (userId). Each dub point's " +
-      "`user` field is a URL ending in /users/<USER_ID>. If the result says hasMore=true, call again with the " +
-      "next page number.",
+      "List the dub points on a Dubber account, optionally only one user's (userId). Each dub point's `user` " +
+      "field is a URL ending in /users/<USER_ID>. By default every page is read (100 per Dubber request, up to " +
+      "10 requests) and up to `limit` dub points are returned from `offset`; if hasMore=true, call again with " +
+      "offset=nextOffset. Pass `page` (and optionally `count`) instead to read one raw Dubber page.",
     inputSchema: {
       type: "object",
       properties: {
         accountId: { type: "string", description: "Dubber account ID." },
         userId: { type: "string", description: "Only this Dubber user's dub points (Dubber `user`)." },
-        count: { type: "integer", minimum: 1, maximum: 100, default: 100, description: "Dub points per page (1-100)." },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 1000,
+          default: 200,
+          description: "All-pages mode: most dub points to return (1-1000). Not used with `page`.",
+        },
+        offset: {
+          type: "integer",
+          minimum: 0,
+          maximum: 1000,
+          default: 0,
+          description: "All-pages mode: skip this many dub points (use the previous result's nextOffset). Not used with `page`.",
+        },
+        count: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          default: 100,
+          description: "One-page mode only (with `page`): dub points per page (1-100).",
+        },
         page: {
           type: "integer",
           minimum: 0,
-          description: "Page number. Omit for the first page; Dubber does not document whether pages start at 0 or 1.",
+          description:
+            "Read just this one Dubber page instead of every page. Dubber does not document whether pages start at 0 or 1.",
         },
       },
       required: ["accountId"],

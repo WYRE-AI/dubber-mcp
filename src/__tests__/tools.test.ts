@@ -94,6 +94,8 @@ describe("schemas", () => {
     expect(Object.keys(schemaOf("dubber_dub_points_list").properties ?? {})).toEqual([
       "accountId",
       "userId",
+      "limit",
+      "offset",
       "count",
       "page",
     ]);

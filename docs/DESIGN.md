@@ -17,7 +17,7 @@ platform. Every tool is `readOnlyHint: true` and sends only GETs; `read` is the 
 - **Users** (2): `dubber_users_list` (one page: `count` ≤100, `page`), `dubber_users_get`.
 - **Profile** (1): `dubber_profile_get`.
 - **Notifications** (2): `dubber_notifications_list`, `dubber_notifications_get`.
-- **Dub.Point** (3): `dubber_dub_points_list` (one page, optional `user`),
+- **Dub.Point** (3): `dubber_dub_points_list` (walks every page, count=100, at most 10 requests, deduped by id; or one raw page with `page`; optional `user`),
   `dubber_dub_points_get`, `dubber_dub_points_find` (the four documented lookup keys only).
 
 ### 1.2 What does NOT ship, and why

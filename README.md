@@ -36,7 +36,7 @@ does not send it yet.
 - **Users**: `dubber_users_list` (one page: `count` 1–100, `page`), `dubber_users_get`.
 - **Profile**: `dubber_profile_get`.
 - **Notifications** (REST hooks): `dubber_notifications_list`, `dubber_notifications_get`.
-- **Dub.Point**: `dubber_dub_points_list` (one page, optional `userId`), `dubber_dub_points_get`,
+- **Dub.Point**: `dubber_dub_points_list` (every page by default with `limit`/`offset`, or one raw page with `page`/`count`; optional `userId`), `dubber_dub_points_get`,
   `dubber_dub_points_find` (`external_type`, `service_provider`, `external_group`,
   `external_identifier`).
 

@@ -29,7 +29,12 @@ drop it and filter with `dubPointId`, `teamId`, `startTimeFrom` and `startTimeTo
   or cached.
 - `dubber_groups_list_unidentified_dub_points` (Dubber's documented
   `GET /groups/:id/unidentified_dub_points`).
-- `dubber_users_list` takes `count`/`page`; `dubber_dub_points_list` takes `userId`/`count`/`page`.
+- `dubber_users_list` takes `count`/`page`. `dubber_dub_points_list` takes `userId` and reads every page by
+  default (count=100 per request, at most 10 requests, deduped by id), returning up to `limit` (default 200,
+  max 1,000) from `offset` with `nextOffset` to continue (WYREAI-567: v1.1.0 made one unpaged call, so it
+  stopped at Dubber's default 20). Passing `page` (with optional `count`) reads one raw Dubber page instead.
+- A list trimmed to fit the output cap says how to re-read the dropped tail of that page from the same
+  start offset, instead of suggesting a smaller `count` on the same `page` (which shifts the offset).
   Both report `hasMore` when a full page comes back, instead of silently stopping at Dubber's
   default 20.
 - `DUBBER_TOOL_TIERS` (only `read` is valid) and an optional `X-Conduit-Tool-Tiers` header that
