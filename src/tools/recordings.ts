@@ -21,6 +21,8 @@ export const RECORDINGS_TOOLS: Tool[] = [
       "Dubber has NO date filter: startTimeFrom/startTimeTo are " +
       `applied by this server after fetching pages (each tool call scans at most ${MAX_SCANNED.toLocaleString("en-US")} ` +
       `recordings / ${MAX_REQUESTS_PER_CALL} Dubber requests; scanCapReached=true means continue with nextCursor; ` +
+      "timeBudgetReached=true means Dubber was slow and the scan stopped early to answer in time, so continue with " +
+      "nextCursor; " +
       "rateLimited=true means Dubber's rate limit stopped the scan early, so wait a few seconds and continue with " +
       "nextCursor, or, if the note says daily, wait for the daily quota reset). startTimeFrom is inclusive; " +
       "startTimeTo is EXCLUSIVE for date-times, but a date-only startTimeTo includes that whole day. " +

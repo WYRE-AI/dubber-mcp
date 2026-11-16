@@ -8,6 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDubberApi, type DubberApi } from "../dubber-api.js";
 import { handleToolCall } from "../handlers/index.js";
+import { WALK_BUDGET } from "../handlers/recordings-list.js";
 import type { ToolResult } from "../handlers/results.js";
 
 const BASE_URL = "https://api.dubber.net/sandbox/v1";
@@ -55,6 +56,10 @@ interface FakeDubber {
   tokenCalls: number;
   /** 1-based recordings request number that answers Dubber's 403 rate limit instead. */
   rateLimitOnRequest?: number;
+  /** Delay before each recordings page answers (ms): 0 by default; a function picks per request number. */
+  pageDelayMs?: number | ((requestNumber: number) => number);
+  /** Extra characters of metadata on every recording, to make real-sized pages. */
+  padChars?: number;
 }
 
 function installFakeDubber(all: FakeRec[]): FakeDubber {
@@ -72,7 +77,10 @@ function installFakeDubber(all: FakeRec[]): FakeDubber {
       }
       expect(url.origin + url.pathname).toBe(`${BASE_URL}/accounts/${ACCOUNT}/recordings`);
       state.requests.push(url);
-      if (state.requests.length === state.rateLimitOnRequest) {
+      const n = state.requests.length;
+      const delay = typeof state.pageDelayMs === "function" ? state.pageDelayMs(n) : (state.pageDelayMs ?? 0);
+      if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+      if (n === state.rateLimitOnRequest) {
         return new Response(JSON.stringify({ code: 1021, message: "Queries Per Second Limit" }), {
           status: 403,
           headers: { "content-type": "application/json" },
@@ -89,7 +97,8 @@ function installFakeDubber(all: FakeRec[]): FakeDubber {
       if (team) rows = rows.filter((r) => r.team === team);
       const count = Math.min(Number(url.searchParams.get("count") ?? 20), 100);
       // limit / offset / page / query / anything else: silently ignored, like Dubber.
-      return json({ self: url.href, recordings: rows.slice(0, count).map(({ ms: _ms, ...r }) => r) });
+      const pad = state.padChars ? { meta_tags: { notes: "x".repeat(state.padChars) } } : {};
+      return json({ self: url.href, recordings: rows.slice(0, count).map(({ ms: _ms, ...r }) => ({ ...r, ...pad })) });
     })
   );
   return state;
@@ -116,6 +125,7 @@ interface ListResult {
   scanned: number;
   requests: number;
   scanCapReached: boolean;
+  timeBudgetReached?: boolean;
   rateLimited?: boolean;
   note?: string;
   filters: Record<string, unknown>;
@@ -479,5 +489,85 @@ describe("dubber_recordings_list paging (real guarded client, mocked fetch)", ()
   it("mints a single token for the whole multi-page call", async () => {
     await list(realClient(), { limit: 500 });
     expect(fake.tokenCalls).toBe(1);
+  });
+});
+
+/**
+ * WYREAI-567 regression (v2.0.1): a whole-account date range walked page after page with no
+ * time budget, so a slow Dubber pushed the call past Conduit's 30 s tool-call timeout and the
+ * caller saw Bad Gateway. The walk now stops at WALK_BUDGET.deadlineMs (scaled down here) and
+ * once the collected recordings fill the 60,000-character result, returning a cursor either way.
+ */
+describe("dubber_recordings_list time and size budgets (WYREAI-567 regression)", () => {
+  const saved = { ...WALK_BUDGET };
+  let all: FakeRec[];
+  let fake: FakeDubber;
+
+  beforeEach(() => {
+    all = dataset(1000);
+    fake = installFakeDubber(all);
+    WALK_BUDGET.deadlineMs = 300;
+    WALK_BUDGET.minPageMs = 20;
+  });
+  afterEach(() => {
+    Object.assign(WALK_BUDGET, saved);
+    vi.unstubAllGlobals();
+  });
+
+  it("a slow Dubber ends a whole-account range within the deadline, with a cursor that resumes without gaps", async () => {
+    fake.pageDelayMs = 80; // ~4 pages fit in 300 ms; the range needs 6
+    const client = realClient();
+    const args = { startTimeFrom: WEEK_FROM, startTimeTo: WEEK_TO, limit: 500 };
+    const started = Date.now();
+    const first = await list(client, args);
+    expect(Date.now() - started).toBeLessThan(WALK_BUDGET.deadlineMs + 150);
+    expect(first).toMatchObject({ timeBudgetReached: true, hasMore: true });
+    expect(first.requests).toBeLessThan(6);
+    expect(first.note).toContain("Dubber was slow");
+    expect(first.note).toContain(`cursor="${first.nextCursor}"`);
+
+    // Resuming collects the rest of the window, in order, with nothing lost or repeated.
+    fake.pageDelayMs = 0;
+    const seen = ids(first);
+    let r = first;
+    for (let guard = 0; r.hasMore && guard < 20; guard++) {
+      r = await list(client, { ...args, cursor: r.nextCursor!, offset: r.remainingOffset });
+      seen.push(...ids(r));
+    }
+    const from = Date.parse(WEEK_FROM);
+    const to = Date.parse(WEEK_TO);
+    expect(seen).toEqual(all.filter((x) => x.ms >= from && x.ms < to).map((x) => x.id));
+  });
+
+  it("a page that does not answer before the deadline is not waited for; its cursor is handed back", async () => {
+    fake.pageDelayMs = (n) => (n === 3 ? 5_000 : 0);
+    const client = realClient();
+    const started = Date.now();
+    const first = await list(client, { limit: 500 });
+    expect(Date.now() - started).toBeLessThan(WALK_BUDGET.deadlineMs + 150);
+    expect(first.requests).toBe(2);
+    expect(ids(first)).toEqual(all.slice(0, 200).map((x) => x.id));
+    expect(first).toMatchObject({ timeBudgetReached: true, hasMore: true, nextCursor: all[199]!.id, remainingOffset: 0 });
+  });
+
+  it("a first page slower than the deadline is a clear error within the deadline, not a gateway timeout", async () => {
+    fake.pageDelayMs = 5_000;
+    const started = Date.now();
+    const result = (await handleToolCall(realClient(), "dubber_recordings_list", { accountId: ACCOUNT })) as ToolResult;
+    expect(Date.now() - started).toBeLessThan(WALK_BUDGET.deadlineMs + 150);
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain("did not return the first page of recordings");
+  });
+
+  it("stops reading pages once the collected recordings fill the response, and resumes without gaps", async () => {
+    fake.padChars = 1_000; // ~1.2 KB per recording: ~50 fit in 60,000 characters
+    const client = realClient();
+    const first = await list(client, { limit: 500 });
+    expect(first.requests).toBe(1); // v2.0.1 read 5 pages here, then trimmed 450 of them away
+    expect(first.returned).toBeGreaterThan(30);
+    expect(first.returned).toBeLessThan(100);
+    expect(first.hasMore).toBe(true);
+    const second = await list(client, { limit: 500, cursor: first.nextCursor!, offset: first.remainingOffset });
+    expect([...ids(first), ...ids(second)]).toEqual(all.slice(0, first.returned + second.returned).map((x) => x.id));
   });
 });
