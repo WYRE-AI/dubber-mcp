@@ -12,8 +12,16 @@
  * Dubber rate-limits with 403 (codes 1021/1022/1024). A rate limit after the
  * first page ends the scan early and returns what was collected plus a
  * cursor, so the caller can resume instead of losing the pages already read.
+ *
+ * Time and size budgets (WYREAI-567 regression): the walk is sequential and
+ * each Dubber page can take seconds, while the gateway aborts a tool call at
+ * 30 s. So the walk stops (a) at WALK_BUDGET.deadlineMs of wall-clock time, a
+ * slow page included, and (b) once the collected recordings already fill the
+ * MAX_RESPONSE_CHARS result, instead of reading pages whose recordings would
+ * only be trimmed away. Both stops return what was collected with a cursor.
  */
 import type { Recording } from "@wyre-ai/node-dubber";
+import { MAX_RESPONSE_CHARS } from "../config.js";
 import { rateLimitOf, type DubberApi } from "../dubber-api.js";
 import {
   listResult,
@@ -30,6 +38,35 @@ export const DUBBER_PAGE_SIZE = 100;
 /** Hard cap on Dubber requests per tool call (10 * 100 = 1,000 recordings scanned). */
 export const MAX_REQUESTS_PER_CALL = 10;
 export const DEFAULT_LIMIT = 100;
+
+/**
+ * Wall-clock budget for one call's Dubber walk. The gateway aborts a tool call at 30 s
+ * (Conduit's unified router), so the walk must finish, slow page included, well before it.
+ * No new page is started with less than minPageMs left. Mutable only for tests.
+ */
+export const WALK_BUDGET = { deadlineMs: 20_000, minPageMs: 1_500 };
+
+/** Resolves to `undefined` if `promise` has not settled within `ms` (the request itself keeps its own timeout). */
+async function within<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), Math.max(0, ms));
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+    promise.catch(() => undefined); // a late rejection after the deadline is not unhandled
+  }
+}
+
+/** Characters `rec` adds to the rendered result (pretty-printed at the array's depth), a slight overestimate. */
+function renderedChars(rec: Recording): number {
+  const text = JSON.stringify(rec, null, 2);
+  let lines = 1;
+  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) lines += 1;
+  return text.length + lines * 4 + 2;
+}
 export const MAX_LIMIT = 500;
 
 /** The documented Dubber query params for this endpoint that we send. */
@@ -195,20 +232,38 @@ export async function listRecordings(client: DubberApi, args: Record<string, unk
   let scanCapReached = false;
   let rateLimited: string | undefined;
   let stoppedOlderAt: string | undefined;
+  let timeBudgetHit = false;
+  let sizeBudgetHit = false;
+  let collectedChars = 0;
+  const startedAt = Date.now();
+  const remaining = () => WALK_BUDGET.deadlineMs - (Date.now() - startedAt);
 
   paging: for (;;) {
     const params: RecordingsPageParams = { count: DUBBER_PAGE_SIZE };
     if (beforeId !== undefined) params.before_id = beforeId;
     if (dubPointId !== undefined) params.dub_point = dubPointId;
     if (teamId !== undefined) params.team = teamId;
-    let page: Recording[];
+    let page: Recording[] | undefined;
     try {
-      page = await fetchRecordingsPage(client, accountId, params);
+      page = await within(fetchRecordingsPage(client, accountId, params), remaining());
     } catch (error) {
       const rateLimit = rateLimitOf(error);
       // Nothing read yet: report the error. Otherwise keep what was read and hand back a cursor.
       if (!rateLimit || requests === 0) throw error;
       rateLimited = rateLimit.kind === "daily" ? "Dubber's daily rate limit" : "Dubber's rate limit";
+      hasMore = true;
+      nextCursor = beforeId ?? null;
+      break;
+    }
+    if (page === undefined) {
+      // Dubber did not answer this page within the budget.
+      if (requests === 0) {
+        throw new Error(
+          `Dubber did not return the first page of recordings within ${Math.round(WALK_BUDGET.deadlineMs / 1000)} s, ` +
+            "so nothing was listed. Try again shortly, or narrow the call with dubPointId or teamId."
+        );
+      }
+      timeBudgetHit = true;
       hasMore = true;
       nextCursor = beforeId ?? null;
       break;
@@ -238,7 +293,11 @@ export async function listRecordings(client: DubberApi, args: Record<string, unk
         continue;
       }
       recordings.push(rec);
-      if (recordings.length >= limit) {
+      collectedChars += renderedChars(rec);
+      const sizeFull = collectedChars > MAX_RESPONSE_CHARS;
+      if (recordings.length >= limit || sizeFull) {
+        // A full result cannot take more recordings: reading further pages would only be trimmed away.
+        sizeBudgetHit = sizeFull && recordings.length < limit;
         // Stopped after examining rec: resuming from rec.id loses nothing.
         // More exists unless this was the final record of a short (last) page.
         const lastOfPage = i === page.length - 1;
@@ -265,6 +324,12 @@ export async function listRecordings(client: DubberApi, args: Record<string, unk
       nextCursor = lastId;
       break;
     }
+    if (remaining() < WALK_BUDGET.minPageMs) {
+      timeBudgetHit = true;
+      hasMore = true;
+      nextCursor = lastId;
+      break;
+    }
     beforeId = lastId;
   }
 
@@ -274,9 +339,18 @@ export async function listRecordings(client: DubberApi, args: Record<string, unk
       `${rateLimited} stopped the scan after ${requests} Dubber requests. ` +
       `Call again with cursor="${nextCursor}" and offset=${toSkip} (same filters) to continue` +
       (rateLimited.includes("daily") ? " once the daily quota resets." : " in a few seconds.");
+  } else if (timeBudgetHit) {
+    note =
+      `Dubber was slow: the scan stopped after ${requests} Dubber requests (${scanned} recordings examined) to answer ` +
+      `within ${Math.round(WALK_BUDGET.deadlineMs / 1000)} s. Call again with cursor="${nextCursor}" and offset=${toSkip} ` +
+      "(same filters) to continue.";
   } else if (scanCapReached) {
     note =
       `Scan cap reached (${requests} Dubber requests, ${scanned} recordings examined) before the limit was met. ` +
+      `Call again with cursor="${nextCursor}" and offset=${toSkip} (same filters) to continue.`;
+  } else if (hasMore && sizeBudgetHit) {
+    note =
+      `The result reached the ${MAX_RESPONSE_CHARS}-character response limit before \`limit\` was met. ` +
       `Call again with cursor="${nextCursor}" and offset=${toSkip} (same filters) to continue.`;
   } else if (hasMore) {
     note = `More recordings may exist. Call again with cursor="${nextCursor}" and offset=${toSkip} (same filters) to continue.`;
@@ -304,6 +378,7 @@ export async function listRecordings(client: DubberApi, args: Record<string, unk
     scanned,
     requests,
     scanCapReached,
+    ...(timeBudgetHit ? { timeBudgetReached: true } : {}),
     ...(rateLimited ? { rateLimited: true } : {}),
     ...(timeFiltered ? { excludedUnparseableStartTime: unparseable } : {}),
     filters: {

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (WYREAI-567, recordings list timeout)
+
+- `dubber_recordings_list` no longer times out at the gateway on a whole-account date range.
+  The walk now stops after 20 s (a slow page included) and returns what it collected with
+  `timeBudgetReached: true` and a `nextCursor`. If the first page itself takes longer, the call
+  returns a clear error. The walk also stops reading pages once the collected recordings fill
+  the 60,000-character result, instead of fetching pages that are then trimmed away. Request
+  parameters, tools and tiers are unchanged.
+
 Restores the v1.1.0 tool surface (WYREAI-567). v2.0.0 removed 23 tools; this release puts
 them back unchanged and keeps the v2.0.0 additions, so every v1.1.0 tool name exists again.
 The v2.0.0 read-tool migration notes below still apply to callers coming from v1.1.0: read
